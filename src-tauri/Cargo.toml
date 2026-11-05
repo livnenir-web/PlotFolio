@@ -1,6 +1,7 @@
 [package]
 name = "plotfolio"
 version = "0.2.0"
+license = "MIT"
 description = "Origin-style plotting and data analysis"
 authors = ["Nir Livne"]
 edition = "2024"

@@ -56,3 +56,7 @@ npm run typecheck
 ```
 
 `AI_NOTES.md` describes the code for an AI assistant or a new contributor; `INSPECTOR_ROADMAP.md` lists planned refinements.
+
+## License
+
+MIT — free to use, change and share, as long as the copyright notice stays. See `LICENSE`.
