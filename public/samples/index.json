@@ -1,0 +1,4 @@
+[
+  { "file": "xy-and-fits.plotproj", "name": "XY plots, fits and layers" },
+  { "file": "3d-surface.plotproj", "name": "3D surface, heatmap and contour" }
+]

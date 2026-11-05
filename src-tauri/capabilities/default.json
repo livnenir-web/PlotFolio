@@ -1,0 +1,53 @@
+{
+  "$schema": "../gen/schemas/desktop-schema.json",
+  "identifier": "default",
+  "description": "Capability for the main window",
+  "windows": [
+    "*"
+  ],
+  "permissions": [
+    "core:default",
+    "core:window:allow-start-dragging",
+    "core:window:allow-set-title",
+    "core:window:allow-create",
+    "core:webview:allow-create-webview-window",
+    "opener:default",
+    "dialog:default",
+    "fs:default",
+    "fs:allow-read-text-file",
+    "fs:allow-write-text-file",
+    "fs:allow-read-file",
+    "fs:allow-write-file",
+    "fs:allow-mkdir",
+    "fs:allow-exists",
+    "fs:allow-read-dir",
+    "fs:allow-appdata-write-recursive",
+    "fs:allow-appdata-read-recursive",
+    "fs:allow-remove",
+    "fs:allow-rename",
+    "fs:allow-copy-file",
+    "core:event:default",
+    "core:window:allow-set-focus",
+    "core:window:allow-is-focused",
+    "core:window:allow-close",
+    "core:window:allow-destroy",
+    "drag:default",
+    {
+      "identifier": "fs:scope",
+      "allow": [
+        {
+          "path": "$HOME/**"
+        },
+        {
+          "path": "$APPDATA/**"
+        },
+        {
+          "path": "$TEMP/**"
+        },
+        {
+          "path": "/Volumes/**"
+        }
+      ]
+    }
+  ]
+}
