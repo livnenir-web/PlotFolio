@@ -32,7 +32,7 @@ npm install
 npm run dev
 ```
 
-Everything works in the browser except the native parts: "Open" uses a file picker, "Save" and exports download files, and there is no menu bar (the toolbar and keyboard shortcuts cover the same commands). Projects stay in the page; download them to keep them.
+Everything works in the browser: PlotFolio draws its own menu bar inside the page (PlotFolio, File, Edit, Data, Analysis, Graph, View), with shortcuts shown as ⌘ on a Mac and Ctrl elsewhere. "Open" uses a file picker, "Save" and exports download files, and separate windows are a Mac-app feature. Projects stay in the page; download them to keep them.
 
 ### Host it on a website
 

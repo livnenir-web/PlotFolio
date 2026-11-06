@@ -171,6 +171,9 @@ export default function App() {
       } else if (k === "p" && !typing && st.ui.activeTab?.kind === "sheet") {
         e.preventDefault();
         useDialogs.getState().setPlotDialog({ sheetId: st.ui.activeTab.id });
+      } else if (k === "f" && !typing && !e.shiftKey && !e.altKey && !isTauri() && st.ui.activeTab?.kind === "graph") {
+        e.preventDefault();
+        handleMenu("fit");
       } else if (k === "e" && e.shiftKey && st.ui.activeTab?.kind === "graph") {
         e.preventDefault();
         useDialogs.getState().setExportDialog({ graphId: st.ui.activeTab.id });

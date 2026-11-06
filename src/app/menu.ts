@@ -5,7 +5,7 @@ import { importViaDialog } from "../io/importFiles";
 import { openProject, saveProject } from "../io/project";
 import { exportSheetCsv } from "../export/csv";
 import { exportGraphAs } from "../export/exportGraph";
-import { sheetSelectionRef } from "../sheet/SheetView";
+import { sheetPasteRef, sheetSelectionRef } from "../sheet/SheetView";
 import { columnStatistics } from "../sheet/stats";
 import { popOutActiveTab } from "./popout";
 import { confirmDialog } from "../ui/confirm";
@@ -191,6 +191,16 @@ export function handleMenu(id: string): void {
     case "popOut":
       void popOutActiveTab();
       break;
+    case "cut":
+    case "copy":
+    case "paste":
+    case "selectAll":
+      editCommand(id);
+      break;
+    case "fullscreen":
+      if (document.fullscreenElement) void document.exitFullscreen();
+      else void document.documentElement.requestFullscreen?.();
+      break;
     case "toggleSidebar":
       st.toggleSidebar();
       break;
@@ -214,4 +224,54 @@ export async function installMenuListener(): Promise<() => void> {
     if (!(await getCurrentWindow().isFocused())) return;
     handleMenu(e.payload);
   });
+}
+
+/**
+ * Edit menu in the browser build (the Mac app uses the native Cut/Copy/Paste items). Text fields get the browser's
+ * own editing commands; a graph gets the same keys its shortcuts use; the sheet grid gets real clipboard events.
+ */
+function editCommand(cmd: "cut" | "copy" | "paste" | "selectAll"): void {
+  const el = document.activeElement as HTMLElement | null;
+  const toast = (m: string) => useDialogs.getState().showToast(m);
+  const mac = /Mac|iPhone|iPad/.test(navigator.platform || navigator.userAgent);
+  const key = (k: string, target: EventTarget = window) =>
+    target.dispatchEvent(new KeyboardEvent("keydown", { key: k, metaKey: mac, ctrlKey: !mac, bubbles: true, cancelable: true }));
+  const readClipboard = async (): Promise<string | null> => {
+    try {
+      return await navigator.clipboard.readText();
+    } catch {
+      toast(`The browser blocked reading the clipboard; press ${mac ? "⌘V" : "Ctrl+V"} instead`);
+      return null;
+    }
+  };
+  if (el && typingTarget()) {
+    if (cmd === "paste") void readClipboard().then((t) => t !== null && document.execCommand("insertText", false, t));
+    else document.execCommand(cmd);
+    return;
+  }
+  const tab = useStore.getState().ui.activeTab;
+  if (tab?.kind === "graph") {
+    if (cmd === "selectAll") key("a");
+    else if (cmd === "paste") key("v");
+    else {
+      key("c");
+      if (cmd === "cut") window.dispatchEvent(new KeyboardEvent("keydown", { key: "Delete", bubbles: true }));
+    }
+    return;
+  }
+  if (tab?.kind === "sheet") {
+    if (cmd === "selectAll") {
+      key("a", el ?? window);
+      return;
+    }
+    if (cmd === "paste") {
+      // the grid ignores synthetic paste events, so the text goes through the sheet's own paste logic
+      void readClipboard().then((t) => {
+        if (t !== null && !sheetPasteRef.paste?.(t)) toast("Click a cell first, then paste");
+      });
+      return;
+    }
+    // copy / cut: a real clipboard event, which the grid answers with the selected cells
+    if (!document.execCommand(cmd)) toast(`Press ${mac ? (cmd === "cut" ? "⌘X" : "⌘C") : cmd === "cut" ? "Ctrl+X" : "Ctrl+C"} to ${cmd}`);
+  }
 }

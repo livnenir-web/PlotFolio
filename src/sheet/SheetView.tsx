@@ -97,6 +97,9 @@ export function goToDataSheet(sheetId: string, colIds: string[]): void {
   st.openTab({ kind: "sheet", id: sheetId });
 }
 
+/** Set by the visible sheet: paste tab-separated text at the selected cell (used by the browser's Edit ▸ Paste). */
+export const sheetPasteRef: { paste: ((text: string) => boolean) | null } = { paste: null };
+
 export const sheetSelectionRef: { sheetId: string | null; cols: number[]; cell: [number, number] | null } = {
   sheetId: null,
   cols: [],
@@ -260,8 +263,9 @@ export function SheetView({ sheet }: { sheet: Sheet }) {
           if (gridRow < HDR) {
             const c = st.getState().project.sheets.find((s) => s.id === sheet.id)!.columns[cIdx];
             if (!c) return;
-            const patch = gridRow === 0 ? { longName: v } : gridRow === 1 ? { units: v } : { formula: v };
-            st.getState().updateColumn(sheet.id, c.id, patch);
+            // header rows: Name, Units, Comments, F(x); the sparkline row takes no text
+            const patch = gridRow === 0 ? { longName: v } : gridRow === 1 ? { units: v } : gridRow === 2 ? { comment: v } : gridRow === 3 ? { formula: v } : null;
+            if (patch) st.getState().updateColumn(sheet.id, c.id, patch);
           } else {
             edits.push({ col: cIdx, row: gridRow - HDR, value: toCell(v, false) });
           }
@@ -272,6 +276,17 @@ export function SheetView({ sheet }: { sheet: Sheet }) {
     },
     [sheet.id, sheet.columns.length, st],
   );
+
+  useEffect(() => {
+    sheetPasteRef.paste = (text) => {
+      const cell = sheetSelectionRef.sheetId === sheet.id ? sheetSelectionRef.cell : null;
+      if (!cell || cell[0] < 0) return false;
+      const rows = text.replace(/\r\n?/g, "\n").replace(/\n$/, "").split("\n").map((l) => l.split("\t"));
+      onPaste([cell[0] + 1, cell[1] + HDR], rows);
+      return true;
+    };
+    return () => void (sheetPasteRef.paste = null);
+  }, [sheet.id, onPaste]);
 
   const onDelete = useCallback(
     (sel: GridSelection) => {

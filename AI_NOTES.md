@@ -88,6 +88,9 @@ if rendering changed, rebuild the app. The owner tests the Mac app by hand; say 
   (`<pattern>` defs inside the plot group, ids from `barPatternId`) and value labels reuse `plot.labels`.
 - A new drawn object: `ShapeKind` → `shapeGeometry`/`shapePointsMm` in `layout.ts` → `ShapeG` → `ShapeInspector`
   → drawing tool in `GraphView.tsx` (`drag.kind === "draw"`, `finishPoly`).
-- A new menu command: id in `menu.rs` → `handleMenu` in `menu.ts` (and the browser keyboard fallback in `App.tsx`
-  if it needs a shortcut without the native menu).
+- A new menu command: id in `menu.rs` (Mac menu bar) **and** in `src/app/menuModel.ts` (the in-page menu bar of the
+  browser build, drawn by `MenuBar.tsx`) → `handleMenu` in `menu.ts`. Give the browser entry a `keys` shortcut only
+  if browsers let a page use it (not ⌘N/⌘T/⌘W/⌘R/⌘L/⌥⌘I) and handle that key in the `App.tsx` keydown handler.
+  Browser Edit commands (cut/copy/paste/select all) go through `editCommand` in `menu.ts`; sheet paste uses
+  `sheetPasteRef` because the grid ignores synthetic paste events.
 - A new analysis: `signal.ts` + `AnalysisDialog.tsx`, menu id `an:<op>`.

@@ -1015,3 +1015,65 @@ input[type="range"] {
   margin-bottom: 4px;
   color: var(--text);
 }
+
+/* in-page menu bar (browser build only; the Mac app uses the system menu bar) */
+.menubar {
+  display: flex;
+  align-items: center;
+  gap: 1px;
+  flex: none;
+}
+/* the project title gives way first when the window is narrow */
+.titlebar .title {
+  min-width: 0;
+  flex: 0 1 auto;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.titlebar .spacer {
+  min-width: 8px;
+}
+.menubar-title {
+  font: inherit;
+  font-size: 13px;
+  color: var(--text);
+  background: none;
+  border: 0;
+  border-radius: 5px;
+  padding: 3px 8px;
+  cursor: default;
+  white-space: nowrap;
+}
+.menubar-title.app {
+  font-weight: 700;
+}
+.menubar-title:hover,
+.menubar-title.open {
+  background: var(--accent);
+  color: var(--accent-text);
+}
+.menu .mlabel:only-child {
+  padding: 4px 12px;
+}
+/* narrow browser windows: the menu bar keeps every title; the project name (also on the tab) and button labels give way */
+@media (max-width: 780px) {
+  .titlebar .title {
+    display: none;
+  }
+  .titlebar .btn .lbl {
+    display: none;
+  }
+  .menubar-title {
+    padding: 3px 5px;
+  }
+}
+.titlebar {
+  overflow: hidden;
+}
+@media (max-width: 640px) {
+  .titlebar .undo-group,
+  .titlebar .undo-group + .toolbar-sep {
+    display: none;
+  }
+}

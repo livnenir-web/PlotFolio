@@ -56,6 +56,17 @@ export async function openProjectFromUrl(url: string, name?: string): Promise<bo
   return true;
 }
 
+/** Open a bundled sample, asking first when the current project has unsaved changes. */
+export async function loadSample(file: string, name: string): Promise<void> {
+  const { confirmDialog } = await import("../ui/confirm");
+  if (useStore.getState().dirty && !(await confirmDialog("Discard your changes and open the sample?"))) return;
+  try {
+    await openProjectFromUrl(`samples/${file}`, name);
+  } catch (e) {
+    useDialogs.getState().showToast(`Could not load the sample: ${(e as Error).message}`);
+  }
+}
+
 /** Bundled samples (public/samples/index.json), for the browser build. */
 export async function listSamples(): Promise<{ file: string; name: string }[]> {
   try {

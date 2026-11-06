@@ -33,7 +33,7 @@ export function ContextMenu({ menu, onClose }: { menu: MenuState | null; onClose
   return createPortal(<MenuPanel x={menu.x} y={menu.y} items={menu.items} onClose={onClose} />, document.body);
 }
 
-function MenuPanel({ x, y, items, onClose }: { x: number; y: number; items: MenuItem[]; onClose: () => void }) {
+export function MenuPanel({ x, y, items, onClose }: { x: number; y: number; items: MenuItem[]; onClose: () => void }) {
   const ref = useRef<HTMLDivElement>(null);
   const [pos, setPos] = useState({ x, y });
   const [sub, setSub] = useState<{ idx: number; x: number; y: number } | null>(null);
@@ -48,7 +48,16 @@ function MenuPanel({ x, y, items, onClose }: { x: number; y: number; items: Menu
     setPos({ x: nx, y: ny });
   }, [x, y]);
   return (
-    <div ref={ref} className="menu" style={{ left: pos.x, top: pos.y }} onMouseDown={(e) => e.stopPropagation()}>
+    <div
+      ref={ref}
+      className="menu"
+      style={{ left: pos.x, top: pos.y }}
+      onMouseDown={(e) => {
+        // clicking a menu must not take focus away from the grid or text field the command acts on
+        e.preventDefault();
+        e.stopPropagation();
+      }}
+    >
       {items.map((it, i) => {
         if (it.type === "sep") return <div key={i} className="msep" />;
         if (it.type === "label")
