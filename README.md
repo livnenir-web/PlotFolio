@@ -1,6 +1,6 @@
 # PlotFolio
 
-Sheet-based plotting, curve fitting and publication-quality figure export — the parts of Origin that matter, rebuilt as a native Mac app (Tauri 2 + React + TypeScript) that also runs in the browser.
+Sheet-based plotting, curve fitting and publication-quality figure export. Built as a native Mac app (Tauri 2 + React + TypeScript) that also runs in the browser.
 
 ## Features
 
