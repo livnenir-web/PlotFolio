@@ -194,8 +194,11 @@ export function fftSpectrum(x: number[], y: number[], windowFn: "none" | "hann" 
   while (n < n0) n <<= 1;
   const re = new Float64Array(n);
   const im = new Float64Array(n);
+  // amplitudes are divided by the window's sum, so a sine of amplitude A reads A with or without a window
+  let wSum = 0;
   for (let i = 0; i < n0; i++) {
     const w = windowFn === "hann" ? 0.5 - 0.5 * Math.cos((2 * Math.PI * i) / (n0 - 1 || 1)) : 1;
+    wSum += w;
     re[i] = vals[i] * w;
   }
   fftInPlace(re, im);
@@ -206,7 +209,7 @@ export function fftSpectrum(x: number[], y: number[], windowFn: "none" | "hann" 
   const fs = 1 / dt;
   for (let k = 0; k <= half; k++) {
     freq.push((k * fs) / n);
-    const mag = Math.hypot(re[k], im[k]) / n0;
+    const mag = Math.hypot(re[k], im[k]) / (wSum || 1);
     amplitude.push(k === 0 || k === half ? mag : 2 * mag);
     power.push(amplitude[k] ** 2);
   }

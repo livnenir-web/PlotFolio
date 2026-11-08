@@ -39,7 +39,7 @@ Everything works in the browser: PlotFolio draws its own menu bar inside the pag
 `npm run build` writes a static site to `dist/`. Copy that folder anywhere on your site (asset paths are relative, so a sub-folder such as `https://example.org/plotfolio/` works) — no server-side code is needed.
 
 - `public/samples/` holds the sample projects and `index.json` lists them; they appear under the **Samples** button. Add your own `.plotproj` files there.
-- Link straight to a sample: `https://example.org/plotfolio/?sample=xy-and-fits`
+- Link straight to a sample: `https://example.org/plotfolio/?sample=ecg`
 - Open any project by URL (same origin, or a server that allows cross-origin requests): `https://example.org/plotfolio/?project=https://example.org/data/figure.plotproj`
 
 ## Project files

@@ -65,3 +65,17 @@ describe("contours and colormaps", () => {
     expect(m(5)).toBe("#808080");
   });
 });
+
+describe("fftSpectrum amplitude", () => {
+  it("reads the amplitude of a sine with and without a Hann window", () => {
+    const n = 1024;
+    const x = Array.from({ length: n }, (_, i) => i / 128);
+    const f0 = 8; // exactly on a bin: 1024 samples at 128 Hz give 0.125 Hz bins
+    const y = x.map((t) => 0.5 * Math.sin(2 * Math.PI * f0 * t));
+    for (const w of ["none", "hann"] as const) {
+      const s = fftSpectrum(x, y, w);
+      const k = s.freq.findIndex((f) => Math.abs(f - f0) < 1e-9);
+      expect(s.amplitude[k]).toBeCloseTo(0.5, 2);
+    }
+  });
+});

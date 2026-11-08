@@ -118,7 +118,7 @@ export function AnalysisDialog({ op, sheetId }: { op: AnalysisOp; sheetId: strin
           const s = fftSpectrum(xs(xFor(sheet, i)), ys(i), fftWindow);
           const xu = sheet.columns[xFor(sheet, i)]?.units;
           if (!freqDone) {
-            cols.push(mk("Frequency", xu ? `1/${xu}` : "", "X", s.freq.map(r6)));
+            cols.push(mk("Frequency", freqUnits(xu), "X", s.freq.map(r6)));
             freqDone = true;
           }
           const name = sheet.columns[i].longName || columnLetter(i);
@@ -290,4 +290,12 @@ export function AnalysisDialog({ op, sheetId }: { op: AnalysisOp; sheetId: strin
       </div>
     </Dialog>
   );
+}
+
+/** Units of the frequency axis for a time axis in the given units: seconds give Hz, milliseconds kHz, and so on. */
+export function freqUnits(timeUnits: string | undefined): string {
+  const u = (timeUnits ?? "").trim();
+  const map: Record<string, string> = { s: "Hz", sec: "Hz", ms: "kHz", "µs": "MHz", us: "MHz", ns: "GHz", min: "1/min", h: "1/h" };
+  if (!u) return "";
+  return map[u] ?? `1/${u}`;
 }
