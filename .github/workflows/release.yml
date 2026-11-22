@@ -1,0 +1,103 @@
+# Builds the Mac app (Apple Silicon + Intel in one file) and the Windows app (64-bit installer) and publishes both
+# as one GitHub release.
+#
+# To release: set the new version in package.json, src-tauri/tauri.conf.json and src-tauri/Cargo.toml, push, then
+# either push a tag (git tag v0.5.0 && git push --tags) or press "Run workflow" on this workflow's page on GitHub.
+# The files are always called PlotFolio.dmg and PlotFolio-Setup.exe, so these links always give the newest version:
+#   https://github.com/livnenir-web/PlotFolio/releases/latest/download/PlotFolio.dmg
+#   https://github.com/livnenir-web/PlotFolio/releases/latest/download/PlotFolio-Setup.exe
+# Neither file is signed with a paid certificate: macOS and Windows each ask once whether to open it (README).
+# Each comes with a .sha256 file holding its checksum.
+name: Release Mac and Windows apps
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  # the release both builds upload to: made first, so that the two cannot both try to create it
+  release:
+    runs-on: ubuntu-latest
+    outputs:
+      tag: ${{ steps.make.outputs.tag }}
+    steps:
+      - uses: actions/checkout@v4
+      - id: make
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          version=$(jq -r .version package.json)
+          if [ "$GITHUB_REF_TYPE" = "tag" ]; then tag="$GITHUB_REF_NAME"; else tag="v$version"; fi
+          gh release view "$tag" >/dev/null 2>&1 || gh release create "$tag" --target "$GITHUB_SHA" --title "PlotFolio $version" --generate-notes
+          echo "tag=$tag" >> "$GITHUB_OUTPUT"
+
+  mac:
+    needs: release
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-apple-darwin,x86_64-apple-darwin
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri
+
+      - run: npm ci
+      - run: npm test
+
+      - name: Build the universal DMG
+        run: npm run tauri build -- --target universal-apple-darwin --bundles dmg
+
+      - name: Add it to the release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          cp src-tauri/target/universal-apple-darwin/release/bundle/dmg/*.dmg PlotFolio.dmg
+          # the checksum lets anyone check that their download is the file built here (README, "Ask an AI assistant")
+          shasum -a 256 PlotFolio.dmg > PlotFolio.dmg.sha256
+          gh release upload "${{ needs.release.outputs.tag }}" PlotFolio.dmg PlotFolio.dmg.sha256 --clobber
+
+  windows:
+    needs: release
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri
+
+      - run: npm ci
+      - run: npm test
+
+      # src-tauri/tauri.windows.conf.json is merged over tauri.conf.json here: Windows title bar, per-user installer
+      - name: Build the installer
+        run: npm run tauri build -- --bundles nsis
+
+      - name: Add it to the release
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          cp src-tauri/target/release/bundle/nsis/*-setup.exe PlotFolio-Setup.exe
+          sha256sum PlotFolio-Setup.exe > PlotFolio-Setup.exe.sha256
+          gh release upload "${{ needs.release.outputs.tag }}" PlotFolio-Setup.exe PlotFolio-Setup.exe.sha256 --clobber
