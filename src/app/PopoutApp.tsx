@@ -9,12 +9,18 @@ import { ExportDialog } from "../export/ExportDialog";
 import { useDialogs } from "./dialogs";
 import { installPopoutSync } from "./popout";
 import { handleMenu } from "./menu";
+import { installShortcutKeys } from "./shortcutKeys";
 import { Icon } from "../ui/Icon";
+import { TooltipLayer } from "../ui/Tooltip";
 import { TabBar } from "./TabBar";
-import { isTauri, setWindowTitle } from "../io/platform";
+import { isTauri, setWindowTitle, shell } from "../io/platform";
 import { installColumnDropHandler } from "../io/columnDrop";
 
-const POPOUT_MENU_IDS = new Set(["undo", "redo", "delete", "exportGraph", "addLayer", "addText", "fit", "copySvg", "copyPng", "toggleInspector", "zoomIn", "zoomOut", "zoomFit"]);
+/** commands a pop-out window acts on, from the menu bar and from the keyboard */
+const POPOUT_MENU_IDS = new Set([
+  ...["undo", "redo", "delete", "exportGraph", "addLayer", "addText", "fit", "copySvg", "copyPng", "toggleInspector", "zoomIn", "zoomOut", "zoomFit"],
+  ...["group", "ungroup", "duplicate", "animate", "playAnimation", "animStepBack", "animStepForward", "animFirst", "animLast"],
+]);
 
 /** A second native window showing one graph or sheet, mirrored from the main window. */
 export function PopoutApp({ tab }: { tab: TabRef }) {
@@ -55,6 +61,9 @@ export function PopoutApp({ tab }: { tab: TabRef }) {
     };
   }, [tab]);
 
+  // shortcuts (the user's own included) for the commands above
+  useEffect(() => installShortcutKeys(POPOUT_MENU_IDS), []);
+
   useEffect(() => {
     const p = inspectorRef.current;
     if (!p) return;
@@ -70,13 +79,18 @@ export function PopoutApp({ tab }: { tab: TabRef }) {
     if (name) void setWindowTitle(name);
   }, [name]);
 
+  // the Mac app: this row is the window's title bar. In the Windows app the Windows title bar shows the name.
+  const mac = shell() === "mac";
+  const drag = mac ? { "data-tauri-drag-region": true } : {};
   return (
     <div className="app">
-      <div className="titlebar" data-tauri-drag-region>
-        <span className="title" data-tauri-drag-region>
-          {name ?? "Closed"}
-        </span>
-        <div className="spacer" data-tauri-drag-region />
+      <div className="titlebar" {...drag}>
+        {shell() !== "windows" && (
+          <span className="title" {...drag}>
+            {name ?? "Closed"}
+          </span>
+        )}
+        <div className="spacer" {...drag} />
         <button className={"icon-btn" + (inspectorCollapsed ? "" : " on")} title="Toggle inspector" onClick={() => useStore.getState().toggleInspector()}>
           <Icon name="inspector" />
         </button>
@@ -101,6 +115,7 @@ export function PopoutApp({ tab }: { tab: TabRef }) {
       </div>
       {exportDialog && <ExportDialog graphId={exportDialog.graphId} />}
       {toast && <div className="toast">{toast}</div>}
+      <TooltipLayer />
     </div>
   );
 }

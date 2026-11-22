@@ -4,11 +4,11 @@ import type { AxisGeom, GraphLayout, LayerLayout, LegendGeom } from "../layout";
 import { markerRadiusMm, textItemBBox } from "../layout";
 import { MarkupText } from "../textMarkup";
 import { fmtMm, ptToMm } from "../units";
-import { bandPath as areaPath, dashArray, linePath, type Pt, smoothPath, shapeSmoothing } from "../paths";
+import { bandPath as areaPath, cutPolylineEnd, dashArray, lineEndOf, linePath, type Pt, smoothPath, shapeSmoothing } from "../paths";
 import { isLogScale } from "../ticks";
 import { BarG, BoxG, ColorScaleG, ContourG, HeatmapG, barPatternId } from "./plots2d";
 import { Layer3DG } from "./Layer3D";
-import type { Shape } from "../../model/types";
+import type { LineEnd, Shape } from "../../model/types";
 
 export interface InteractiveProps {
   selection: Selection;
@@ -99,7 +99,7 @@ function isSel(sel: Selection[] | undefined, pred: (s: Selection) => boolean): b
 
 const NO_PROPS = {};
 const EMPTY_SEL: Selection[] = [];
-/** Dev-only render counters (window.__renderStats) to verify that memoisation holds. */
+/** Dev-only render counters (window.__renderStats) to verify that memoization holds. */
 export const renderStats = { svg: 0, layer: 0, plot: 0, axis: 0 };
 type PdFn = (s: Selection) => object;
 type DblFn = (s: Selection, target?: "title" | "legendEntry" | "text", extra?: string) => object;
@@ -112,7 +112,7 @@ export function GraphSvg({ layout, background, interactive, svgRef, style, child
   const graphId = graph.id;
   const onPointerDown = interactive?.onPointerDown;
   const onDoubleClick = interactive?.onDoubleClick;
-  // handler factories depend only on the (stable) callbacks, so memoised layers keep their props
+  // handler factories depend only on the (stable) callbacks, so memoized layers keep their props
   const pd = useMemo<PdFn>(() => (onPointerDown ? (s) => ({ onPointerDown: (e: RPointerEvent<SVGElement>) => onPointerDown(s, e) }) : noPd), [onPointerDown]);
   const dbl = useMemo<DblFn>(() => (onDoubleClick ? (s, target, extra) => ({ onDoubleClick: (e: React.MouseEvent<SVGElement>) => onDoubleClick(s, e, target, extra) }) : noDbl), [onDoubleClick]);
   // selections grouped per layer: a layer only re-renders when its own selection changes
@@ -164,7 +164,7 @@ interface LayerProps {
 }
 
 /**
- * One layer. Memoised: it re-renders only when its layout, its own selections or layer mode change.
+ * One layer. Memoized: it re-renders only when its layout, its own selections or layer mode change.
  * When interactive, frame-relative content is wrapped in `data-drag` groups that GraphView translates
  * during a drag preview (no React render per pointer move); export markup has no wrappers.
  */
@@ -205,6 +205,7 @@ const LayerG = memo(function LayerG({ ll, index, graphId, sel, layerMode, intera
           {[ll.x, ll.y, ll.y2].map((ag) => (ag ? <AxisG key={ag.which} ll={ll} ag={ag} graphId={graphId} selected={axisSelected(ag.which)} interactive={interactive} pd={pd} dbl={dbl} /> : null))}
         </>
       )}
+      {ll.anim && (ll.anim.cursorXMm !== null || ll.anim.markers.length > 0 || ll.anim.readout.length > 0) && <AnimOverlayG ll={ll} />}
       {ll.colorScale && (
         <DragGroup id={interactive ? `colorScale:${layerId}` : null}>
           <ColorScaleG ll={ll} graphId={graphId} selected={isSel(sel, (x) => x.kind === "colorScale")} interactive={interactive} pd={pd} />
@@ -292,6 +293,59 @@ function headPath(x: number, y: number, dx: number, dy: number, size: number): s
   return `M${fmtMm(x)} ${fmtMm(y)}L${fmtMm(bx - uy * w)} ${fmtMm(by + ux * w)}L${fmtMm(bx + uy * w)} ${fmtMm(by - ux * w)}Z`;
 }
 
+/** How far the line stops short of its end point so that the shape there stays crisp (an arrow's tip). */
+const lineEndInset = (kind: LineEnd | null, size: number) => (kind === "arrow" ? size * 0.8 : 0);
+
+/**
+ * The shape at an end of a line: at (x, y), for a line arriving along (dx, dy). An arrow head has its tip on the
+ * point; symbols are centered on it and as wide as the arrow head; a bar crosses the line there.
+ */
+function LineEndMark({ kind, x, y, dx, dy, size, color, lw }: { kind: LineEnd | null; x: number; y: number; dx: number; dy: number; size: number; color: string; lw: number }) {
+  if (!kind) return null;
+  if (kind === "arrow") return <path d={headPath(x, y, dx, dy, size)} fill={color} stroke="none" />;
+  const len = Math.hypot(dx, dy) || 1;
+  const ux = dx / len;
+  const uy = dy / len;
+  const h = size * 0.4;
+  if (kind === "circle") return <circle cx={fmtMm(x)} cy={fmtMm(y)} r={fmtMm(h)} fill={color} stroke="none" />;
+  if (kind === "bar") return <line x1={fmtMm(x - uy * h)} y1={fmtMm(y + ux * h)} x2={fmtMm(x + uy * h)} y2={fmtMm(y - ux * h)} stroke={color} strokeWidth={lw} strokeLinecap="butt" />;
+  // corners along (a) and across (b) the line: a square has its sides along it, a diamond its points
+  const corner = (a: number, b: number) => `${fmtMm(x + ux * a - uy * b)} ${fmtMm(y + uy * a + ux * b)}`;
+  const d = kind === "square" ? `M${corner(-h, -h)}L${corner(h, -h)}L${corner(h, h)}L${corner(-h, h)}Z` : `M${corner(-h * 1.3, 0)}L${corner(0, -h * 1.3)}L${corner(h * 1.3, 0)}L${corner(0, h * 1.3)}Z`;
+  return <path d={d} fill={color} stroke="none" />;
+}
+
+const isCdf = (p: Plot) => p.type === "histogram" && p.histogram?.display === "cdf";
+
+const BRACKET_LABEL: TextStyle = { font: "Arial", sizePt: 8, bold: false, italic: false, color: "#000000" };
+
+/**
+ * A significance bracket from (x1, y1) to (x2, y2) in mm: the path with its two end ticks, and where the label
+ * goes. The ticks point down the page for a level bracket (left for an upright one), the label sits opposite.
+ */
+export function bracketGeometry(sh: Pick<Shape, "x1" | "y1" | "x2" | "y2" | "headSizeMm">, labelSizePt: number) {
+  const dx = sh.x2 - sh.x1;
+  const dy = sh.y2 - sh.y1;
+  const len = Math.hypot(dx, dy) || 1;
+  let nx = -dy / len;
+  let ny = dx / len;
+  if (ny < -1e-9 || (Math.abs(ny) <= 1e-9 && nx > 0)) {
+    nx = -nx;
+    ny = -ny;
+  }
+  const t = sh.headSizeMm;
+  const d = `M${fmtMm(sh.x1 + nx * t)} ${fmtMm(sh.y1 + ny * t)}L${fmtMm(sh.x1)} ${fmtMm(sh.y1)}L${fmtMm(sh.x2)} ${fmtMm(sh.y2)}L${fmtMm(sh.x2 + nx * t)} ${fmtMm(sh.y2 + ny * t)}`;
+  // text runs along the bracket, kept upright
+  let angle = (Math.atan2(dy, dx) * 180) / Math.PI;
+  if (angle > 90) angle -= 180;
+  if (angle <= -90) angle += 180;
+  const gap = 0.5 + ptToMm(labelSizePt) * 0.12;
+  // the label's baseline sits `gap` off the line on the far side from the ticks; turned text hangs below its anchor
+  const flip = Math.abs(angle) > 1e-6 && nx < 0 === angle > 0;
+  const off = flip ? gap + ptToMm(labelSizePt) * 0.72 : gap;
+  return { d, labelX: (sh.x1 + sh.x2) / 2 - nx * off, labelY: (sh.y1 + sh.y2) / 2 - ny * off, angle };
+}
+
 export function shapeGeometry(sh: Shape) {
   const x = Math.min(sh.x1, sh.x2);
   const y = Math.min(sh.y1, sh.y2);
@@ -308,9 +362,11 @@ const ShapeG = memo(function ShapeG({ shape, mm, pointsMm, graphId, layerId, sel
     const dx = sh.x2 - sh.x1;
     const dy = sh.y2 - sh.y1;
     const len = Math.hypot(dx, dy) || 1;
-    // shorten the line under the heads so the tip is crisp
-    const t0 = sh.headStart ? (sh.headSizeMm * 0.8) / len : 0;
-    const t1 = sh.headEnd ? (sh.headSizeMm * 0.8) / len : 0;
+    // shorten the line under arrow heads so the tip is crisp
+    const start = lineEndOf(sh, "start");
+    const end = lineEndOf(sh, "end");
+    const t0 = lineEndInset(start, sh.headSizeMm) / len;
+    const t1 = lineEndInset(end, sh.headSizeMm) / len;
     const ax = sh.x1 + dx * t0;
     const ay = sh.y1 + dy * t0;
     const bx = sh.x2 - dx * t1;
@@ -318,10 +374,23 @@ const ShapeG = memo(function ShapeG({ shape, mm, pointsMm, graphId, layerId, sel
     return (
       <g {...common}>
         <line x1={fmtMm(ax)} y1={fmtMm(ay)} x2={fmtMm(bx)} y2={fmtMm(by)} stroke={sh.stroke} strokeWidth={lw} strokeDasharray={dasharray} strokeLinecap="round" />
-        {sh.headEnd && <path d={headPath(sh.x2, sh.y2, dx, dy, sh.headSizeMm)} fill={sh.stroke} stroke="none" />}
-        {sh.headStart && <path d={headPath(sh.x1, sh.y1, -dx, -dy, sh.headSizeMm)} fill={sh.stroke} stroke="none" />}
+        <LineEndMark kind={end} x={sh.x2} y={sh.y2} dx={dx} dy={dy} size={sh.headSizeMm} color={sh.stroke} lw={lw} />
+        <LineEndMark kind={start} x={sh.x1} y={sh.y1} dx={-dx} dy={-dy} size={sh.headSizeMm} color={sh.stroke} lw={lw} />
         {interactive && <line className="hit" x1={fmtMm(sh.x1)} y1={fmtMm(sh.y1)} x2={fmtMm(sh.x2)} y2={fmtMm(sh.y2)} stroke={HIT} strokeWidth={Math.max(lw + 1.5, 2)} />}
         {selected && <line x1={fmtMm(sh.x1)} y1={fmtMm(sh.y1)} x2={fmtMm(sh.x2)} y2={fmtMm(sh.y2)} stroke="#007aff" strokeOpacity={0.4} strokeWidth={lw + 0.8} pointerEvents="none" />}
+      </g>
+    );
+  }
+  if (sh.kind === "bracket") {
+    const ls = sh.labelStyle ?? BRACKET_LABEL;
+    const b = bracketGeometry(sh, ls.sizePt);
+    return (
+      <g {...common}>
+        <path d={b.d} fill="none" stroke={sh.stroke} strokeWidth={lw} strokeDasharray={dasharray} strokeLinejoin="miter" />
+        {sh.label && <MarkupText text={sh.label} x={Number(fmtMm(b.labelX))} y={Number(fmtMm(b.labelY))} style={ls} anchor="middle" rotate={Math.abs(b.angle) > 1e-6 ? Number(b.angle.toFixed(2)) : undefined} />}
+        {interactive && <path className="hit" d={b.d} fill="none" stroke={HIT} strokeWidth={Math.max(lw + 1.5, 2)} />}
+        {interactive && sh.label && <circle className="hit" cx={fmtMm(b.labelX)} cy={fmtMm(b.labelY - ptToMm(ls.sizePt) * 0.3)} r={fmtMm(Math.max(1.5, ptToMm(ls.sizePt) * 0.6))} fill={HIT} />}
+        {selected && <path d={b.d} fill="none" stroke="#007aff" strokeOpacity={0.4} strokeWidth={lw + 0.8} pointerEvents="none" />}
       </g>
     );
   }
@@ -332,9 +401,33 @@ const ShapeG = memo(function ShapeG({ shape, mm, pointsMm, graphId, layerId, sel
     const closed = sh.kind === "polygon";
     const d = smoothPath(pts, shapeSmoothing(sh), closed);
     const fillable = closed && sh.fill;
+    // open paths can carry a shape at each end: it points along the last stretch of the path (one head size long, so
+    // the wobble at the end of a pen stroke does not turn it), and the path stops short under an arrow head
+    const start = closed ? null : lineEndOf(sh, "start");
+    const end = closed ? null : lineEndOf(sh, "end");
+    const size = sh.headSizeMm;
+    let drawn = pts;
+    let endDir: [number, number] = [0, 0];
+    let startDir: [number, number] = [0, 0];
+    if (end) {
+      const cut = cutPolylineEnd(drawn, lineEndInset(end, size) || size);
+      const q = cut[cut.length - 1];
+      endDir = [pts[pts.length - 1][0] - q[0], pts[pts.length - 1][1] - q[1]];
+      if (end === "arrow") drawn = cut;
+    }
+    if (start) {
+      const rev = [...drawn].reverse();
+      const cut = cutPolylineEnd(rev, lineEndInset(start, size) || size);
+      const q = cut[cut.length - 1];
+      startDir = [pts[0][0] - q[0], pts[0][1] - q[1]];
+      if (start === "arrow") drawn = cut.reverse();
+    }
+    const dDrawn = drawn === pts ? d : smoothPath(drawn, shapeSmoothing(sh), closed);
     return (
       <g {...common}>
-        <path d={d} fill={fillable ? sh.fill! : "none"} fillOpacity={fillable ? sh.fillOpacity : undefined} stroke={sh.stroke} strokeWidth={lw} strokeDasharray={dasharray} strokeLinejoin="round" strokeLinecap="round" />
+        <path d={dDrawn} fill={fillable ? sh.fill! : "none"} fillOpacity={fillable ? sh.fillOpacity : undefined} stroke={sh.stroke} strokeWidth={lw} strokeDasharray={dasharray} strokeLinejoin="round" strokeLinecap="round" />
+        <LineEndMark kind={end} x={pts[pts.length - 1][0]} y={pts[pts.length - 1][1]} dx={endDir[0]} dy={endDir[1]} size={size} color={sh.stroke} lw={lw} />
+        <LineEndMark kind={start} x={pts[0][0]} y={pts[0][1]} dx={startDir[0]} dy={startDir[1]} size={size} color={sh.stroke} lw={lw} />
         {interactive && <path className="hit" d={d} fill={fillable || selected ? HIT : "none"} stroke={HIT} strokeWidth={Math.max(lw + 1.5, 2)} style={{ pointerEvents: fillable || selected ? "all" : "stroke" }} />}
         {selected && <path d={d} fill="none" stroke="#007aff" strokeOpacity={0.4} strokeWidth={lw + 0.8} pointerEvents="none" />}
       </g>
@@ -396,7 +489,12 @@ const PlotG = memo(function PlotG({ ll, plot, graphId, selected, interactive, pd
   const xs = ll.x.scale;
   const ys = plot.yAxis === "y2" && ll.y2 ? ll.y2.scale : ll.y.scale;
   const color = plot.color;
-  const common = { className: "plot", "data-name": plot.name, "data-plot-id": plot.id, ...pd(s), ...dbl(s) };
+  // animation frames only (ll.anim is absent otherwise, and these stay undefined): fade-in, partial ends, fading tail
+  const an = ll.anim;
+  const part = an?.partial.get(plot.id);
+  const tailMask = an?.tailMask.get(plot.id);
+  const fadeOrder = !!an?.fadeByOrder.has(plot.id);
+  const common = { className: "plot", "data-name": plot.name, "data-plot-id": plot.id, opacity: an?.plotOpacity.get(plot.id), mask: tailMask ? `url(#anim-mask-${plot.id})` : undefined, ...pd(s), ...dbl(s) };
 
   if (plot.type === "heatmap" || plot.type === "contour" || plot.type === "bar" || plot.type === "box") {
     const f = ll.layer.frame;
@@ -416,6 +514,26 @@ const PlotG = memo(function PlotG({ ll, plot, graphId, selected, interactive, pd
     const bins = ll.bins.get(plot.id) ?? [];
     const y0 = ys.map(isLogScale(ys.scale) ? Math.max(ys.from, Number.MIN_VALUE) : Math.max(0, Math.min(ys.from, ys.to))) ?? ll.layer.frame.yMm + ll.layer.frame.hMm;
     const lw = ptToMm(plot.line.widthPt);
+    if (plot.histogram?.display === "cdf") {
+      // cumulative distribution: up to the fraction reached at each distinct value, then level to the next one
+      let d = "";
+      for (const b of bins) {
+        const x0 = xs.map(b.x0);
+        const x1 = xs.map(b.x1);
+        const y1 = ys.map(b.value);
+        if (x0 === null || x1 === null || y1 === null) continue;
+        d += `${d ? "" : `M${fmtMm(x0)} ${fmtMm(y0)}`}V${fmtMm(y1)}H${fmtMm(x1)}`;
+      }
+      return (
+        <g {...common}>
+          {selected && d && <path className="halo" d={d} fill="none" stroke="#007aff" strokeOpacity={0.35} strokeWidth={lw + 1} strokeLinejoin="round" />}
+          <g className="cdf" strokeOpacity={plot.line.opacity != null && plot.line.opacity < 1 ? plot.line.opacity : undefined}>
+            <path d={d} fill="none" stroke={color} strokeWidth={lw} strokeDasharray={dashArray(plot.line, lw)} strokeLinejoin="round" />
+          </g>
+          {interactive && d && <path className="hit" d={d} fill="none" stroke={HIT} strokeWidth={Math.max(lw + 1.2, 1.5)} style={{ pointerEvents: "stroke" }} />}
+        </g>
+      );
+    }
     return (
       <g {...common}>
         <g className="bars" fill={plot.histogram?.filled ? color : "none"} stroke={color} strokeWidth={lw}>
@@ -441,13 +559,16 @@ const PlotG = memo(function PlotG({ ll, plot, graphId, selected, interactive, pd
     return px === null || py === null ? null : [px, py];
   });
 
+  // points that carry a symbol, label or error bar: all of them, except an end interpolated by an animation frame
+  const spts = part ? pts.map((q, i) => ((part.head && i === 0) || (part.tail && i === pts.length - 1) ? null : q)) : pts;
+
   const lw = ptToMm(plot.line.widthPt);
-  const path = plot.showLine ? linePath(pts, plot.line.connect ?? "straight") : "";
+  const path = plot.showLine ? linePath(pts, plot.line.connect ?? "straight", plot.line.smoothing ?? 1) : "";
   const r = markerRadiusMm(plot);
   const mstyle = markerStyle(plot);
   // drop lines and data labels
-  const dropLines = plot.dropLines && (plot.dropLines.toX || plot.dropLines.toY) ? buildDropLines(pts, plot.dropLines, ll, plot) : "";
-  const labelNodes = plot.labels?.show ? dataLabelNodes(pts, d, plot, ll) : null;
+  const dropLines = plot.dropLines && (plot.dropLines.toX || plot.dropLines.toY) ? buildDropLines(spts, plot.dropLines, ll, plot) : "";
+  const labelNodes = plot.labels?.show ? dataLabelNodes(spts, d, plot, ll) : null;
 
   // error bars, or a shaded band between y − err and y + err
   const errSegs: string[] = [];
@@ -469,7 +590,7 @@ const PlotG = memo(function PlotG({ ll, plot, graphId, selected, interactive, pd
   if (plot.errorBars.show && (d.yErr || d.xErr)) {
     const cap = plot.errorBars.capMm / 2;
     for (let i = 0; i < d.x.length; i++) {
-      const p = pts[i];
+      const p = spts[i];
       if (!p) continue;
       if (d.yErr && d.yErr[i] > 0 && !asBand) {
         const lo = ys.map(d.y[i] - d.yErr[i]);
@@ -487,10 +608,12 @@ const PlotG = memo(function PlotG({ ll, plot, graphId, selected, interactive, pd
   }
 
   const mk = plot.showMarkers && plot.marker.shape !== "none" ? markerPathFn(plot.marker.shape, r) : null;
-  const markersPath = mk ? pts.map((p) => (p ? mk(p[0], p[1]) : "")).join("") : "";
-  // colour by a column: one path per distinct colour
+  const markersPath = mk ? spts.map((p) => (p ? mk(p[0], p[1]) : "")).join("") : "";
+  // color by a column: one path per distinct color
   const mapper = plot.colorBy?.colId ? ll.colors.get(plot.id) : undefined;
-  const colorGroups = mk && mapper && d.colorVals ? groupByColor(pts, d.colorVals, mapper, mk) : null;
+  const colorGroups = mk && mapper && d.colorVals && !fadeOrder ? groupByColor(spts, d.colorVals, mapper, mk) : null;
+  // animation, fading tail along the point order: the line and the symbols in pieces of rising opacity
+  const fadePieces = fadeOrder ? fadeChunks(pts.length) : null;
 
   let predPath = "";
   if (plot.type === "fitCurve" && plot.fit?.showPredBand && plot.fit.predLower && plot.fit.predUpper && plot.fit.curveX) {
@@ -527,6 +650,17 @@ const PlotG = memo(function PlotG({ ll, plot, graphId, selected, interactive, pd
 
   return (
     <g {...common}>
+      {tailMask && (
+        <defs>
+          <linearGradient id={`anim-fade-${plot.id}`} gradientUnits="userSpaceOnUse" x1={fmtMm(tailMask.x0Mm)} x2={fmtMm(tailMask.x1Mm)} y1={0} y2={0}>
+            <stop offset={0} stopColor="#ffffff" stopOpacity={0} />
+            <stop offset={1} stopColor="#ffffff" stopOpacity={1} />
+          </linearGradient>
+          <mask id={`anim-mask-${plot.id}`} maskUnits="userSpaceOnUse" x={ll.layer.frame.xMm - 5} y={ll.layer.frame.yMm - 5} width={ll.layer.frame.wMm + 10} height={ll.layer.frame.hMm + 10}>
+            <rect x={ll.layer.frame.xMm - 5} y={ll.layer.frame.yMm - 5} width={ll.layer.frame.wMm + 10} height={ll.layer.frame.hMm + 10} fill={`url(#anim-fade-${plot.id})`} />
+          </mask>
+        </defs>
+      )}
       {predPath && (
         <g className="prediction-band">
           <path d={predPath} fill={color} fillOpacity={0.07} stroke={color} strokeOpacity={0.35} strokeWidth={ptToMm(0.5)} strokeDasharray="1.2 0.8" />
@@ -548,9 +682,16 @@ const PlotG = memo(function PlotG({ ll, plot, graphId, selected, interactive, pd
           <path d={errSegs.join("")} />
         </g>
       )}
-      {path && (
+      {path && !fadePieces && (
         <g className="line" strokeOpacity={plot.line.opacity != null && plot.line.opacity < 1 ? plot.line.opacity : undefined}>
           <path d={path} fill="none" stroke={color} strokeWidth={lw} strokeDasharray={dashArray(plot.line, lw)} strokeLinejoin="round" strokeLinecap="round" />
+        </g>
+      )}
+      {path && fadePieces && (
+        <g className="line" fill="none" stroke={color} strokeWidth={lw} strokeLinejoin="round">
+          {fadePieces.map((c) => (
+            <path key={c.a} d={linePath(pts.slice(c.a, c.b + 1), plot.line.connect ?? "straight", plot.line.smoothing ?? 1)} strokeOpacity={c.opacity * (plot.line.opacity ?? 1)} />
+          ))}
         </g>
       )}
       {dropLines && (
@@ -561,15 +702,80 @@ const PlotG = memo(function PlotG({ ll, plot, graphId, selected, interactive, pd
       {markersPath && (
         <g className="markers" fill={mstyle.fill} stroke={mstyle.stroke} strokeWidth={mstyle.strokeWidth} opacity={plot.marker.opacity != null && plot.marker.opacity < 1 ? plot.marker.opacity : undefined}>
           {selected && <path className="halo" d={markersPath} fill="none" stroke="#007aff" strokeOpacity={0.35} strokeWidth={0.8} />}
-          {colorGroups ? colorGroups.map((g) => <path key={g.color} d={g.d} fill={mstyle.fill === "none" ? "none" : g.color} stroke={mstyle.stroke === "none" ? "none" : plot.marker.edgeColor ?? g.color} />) : <path d={markersPath} />}
+          {colorGroups ? (
+            colorGroups.map((g) => <path key={g.color} d={g.d} fill={mstyle.fill === "none" ? "none" : g.color} stroke={mstyle.stroke === "none" ? "none" : plot.marker.edgeColor ?? g.color} />)
+          ) : fadePieces && mk ? (
+            fadePieces.map((c, k) => (
+              <path
+                key={c.a}
+                d={spts
+                  .slice(c.a, k === fadePieces.length - 1 ? c.b + 1 : c.b)
+                  .map((q) => (q ? mk(q[0], q[1]) : ""))
+                  .join("")}
+                opacity={c.opacity}
+              />
+            ))
+          ) : (
+            <path d={markersPath} />
+          )}
         </g>
       )}
       {labelNodes && <g className="data-labels">{labelNodes}</g>}
       {interactive && path && <path className="hit" d={path} fill="none" stroke={HIT} strokeWidth={Math.max(lw + 1.2, 1.5)} style={{ pointerEvents: "stroke" }} />}
-      {interactive && markersPath && <path className="hit" d={(() => { const hp = markerPathFn("circle", Math.max(r, 0.6) + 0.4); return pts.map((p) => (p ? hp(p[0], p[1]) : "")).join(""); })()} fill={HIT} stroke="none" />}
+      {interactive && markersPath && <path className="hit" d={(() => { const hp = markerPathFn("circle", Math.max(r, 0.6) + 0.4); return spts.map((p) => (p ? hp(p[0], p[1]) : "")).join(""); })()} fill={HIT} stroke="none" />}
     </g>
   );
 });
+
+/** Index ranges [a, b] that cut n points into up to 24 consecutive pieces sharing their end points, with opacity rising to 1. */
+function fadeChunks(n: number): { a: number; b: number; opacity: number }[] {
+  const pieces = Math.min(24, n - 1);
+  const out: { a: number; b: number; opacity: number }[] = [];
+  for (let i = 0; i < pieces; i++) {
+    const a = Math.floor((i * (n - 1)) / pieces);
+    const b = Math.floor(((i + 1) * (n - 1)) / pieces);
+    if (b > a) out.push({ a, b, opacity: (i + 1) / pieces });
+  }
+  return out;
+}
+
+/** Symbol of the current point of an animation (shared with the 3D layer, which depth-sorts it). */
+export function animMarkerProps(m: NonNullable<LayerLayout["anim"]>["style"]["marker"]): { r: number; fill: string; stroke: string; strokeWidth: number } {
+  const hollow = !m.filled || m.shape === "cross" || m.shape === "plus";
+  return { r: ptToMm(m.sizePt) / 2, fill: hollow ? "none" : m.color, stroke: hollow ? m.color : "none", strokeWidth: hollow ? ptToMm(Math.max(0.5, m.sizePt / 4)) : 0 };
+}
+
+/** What an animation frame draws on top of a layer: the cursor line, the current points and their values. */
+function AnimOverlayG({ ll }: { ll: LayerLayout }) {
+  const an = ll.anim!;
+  const f = ll.layer.frame;
+  const mp = animMarkerProps(an.style.marker);
+  const cur = an.style.cursor;
+  const cw = ptToMm(cur.widthPt);
+  const textStyle: TextStyle = ll.layer.axes.x.tickLabelStyle;
+  const markers = ll.is3d ? [] : an.markers; // 3D symbols are drawn among the depth-sorted content
+  return (
+    <g className="animation" pointerEvents="none">
+      {an.cursorXMm !== null && (
+        <line className="cursor" x1={fmtMm(an.cursorXMm)} x2={fmtMm(an.cursorXMm)} y1={fmtMm(f.yMm)} y2={fmtMm(f.yMm + f.hMm)} stroke={cur.color} strokeWidth={cw} strokeDasharray={dashArray({ style: cur.style, dashPt: [] }, cw)} />
+      )}
+      {markers.length > 0 && an.style.marker.shape !== "none" && (
+        <g className="current-point" fill={mp.fill} stroke={mp.stroke} strokeWidth={mp.strokeWidth}>
+          {markers.map((m) => (
+            <path key={m.plotId} data-plot-id={m.plotId} d={markerPath(an.style.marker.shape, m.xMm, m.yMm, mp.r)} />
+          ))}
+        </g>
+      )}
+      {an.readout.length > 0 && (
+        <g className="values">
+          {an.readout.map((ro, i) => (
+            <MarkupText key={i} text={ro.text} x={ro.xMm} y={ro.yMm} style={textStyle} anchor={ro.anchor} vAnchor={an.style.readout.position === "corner" || ll.is3d ? "hanging" : "baseline"} />
+          ))}
+        </g>
+      )}
+    </g>
+  );
+}
 
 function HaloRect({ ll }: { ll: LayerLayout }) {
   const f = ll.layer.frame;
@@ -726,7 +932,7 @@ const LegendG = memo(function LegendG({ ll, lg, graphId, selected, interactive, 
   const style: TextStyle = legend.style;
   const pad = lg.pad;
   return (
-    <g className="legend" transform={`translate(${fmtMm(lg.x)} ${fmtMm(lg.y)})`} style={interactive ? { cursor: "move" } : undefined} {...pd(s)}>
+    <g className="legend" transform={`translate(${fmtMm(lg.x)} ${fmtMm(lg.y)})`} style={interactive ? { cursor: "move" } : undefined} {...pd(s)} {...dbl(s, "legendEntry")}>
       {(legend.background || legend.border) && (
         <rect x={0} y={0} width={fmtMm(lg.w)} height={fmtMm(lg.h)} fill={legend.background ? "#ffffff" : "none"} stroke={legend.border ? "#000000" : "none"} strokeWidth={ptToMm(0.5)} />
       )}
@@ -738,8 +944,8 @@ const LegendG = memo(function LegendG({ ll, lg, graphId, selected, interactive, 
         const r = markerRadiusMm(p);
         const mk = markerStyle(p);
         return (
-          <g key={p.id} className="legend-entry" data-plot-id={p.id} {...dbl(s, "legendEntry", p.id)}>
-            {(p.type === "histogram" || p.type === "bar") && (
+          <g key={p.id} className="legend-entry" data-plot-id={p.id} opacity={ll.anim?.plotOpacity.get(p.id)}>
+            {(p.type === "histogram" || p.type === "bar") && !isCdf(p) && (
               <rect
                 x={fmtMm(x0)}
                 y={fmtMm(cy - lg.rowH * 0.3)}
@@ -750,7 +956,7 @@ const LegendG = memo(function LegendG({ ll, lg, graphId, selected, interactive, 
                 strokeWidth={ptToMm(p.bar?.outlineWidthPt ?? 0.5)}
               />
             )}
-            {p.showLine && p.type !== "histogram" && p.type !== "bar" && (
+            {((p.showLine && p.type !== "histogram" && p.type !== "bar") || isCdf(p)) && (
               <line x1={fmtMm(x0)} x2={fmtMm(x0 + legend.symbolWidthMm)} y1={fmtMm(cy)} y2={fmtMm(cy)} stroke={p.color} strokeWidth={lw} strokeDasharray={dashArray(p.line, lw)} strokeOpacity={p.line.opacity != null && p.line.opacity < 1 ? p.line.opacity : undefined} />
             )}
             {p.showMarkers && p.marker.shape !== "none" && p.type !== "histogram" && p.type !== "bar" && (
@@ -766,7 +972,7 @@ const LegendG = memo(function LegendG({ ll, lg, graphId, selected, interactive, 
   );
 });
 
-/** Marker paths grouped by colour for colour-by-column plots. */
+/** Marker paths grouped by color for color-by-column plots. */
 function groupByColor(pts: Pt[], vals: number[], mapper: (v: number) => string, mk: (cx: number, cy: number) => string): { color: string; d: string }[] {
   const groups = new Map<string, string[]>();
   pts.forEach((p, i) => {

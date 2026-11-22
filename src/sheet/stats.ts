@@ -1,8 +1,9 @@
 import { useStore } from "../model/store";
 import { newColumn, uid, uniqueName, columnLetter } from "../model/defaults";
-import type { Column, Sheet } from "../model/types";
+import type { CellValue, Column, Sheet } from "../model/types";
 
-function describe(values: number[]) {
+/** n, mean, SD, SEM, median, extremes and sum of some numbers (null for none). */
+export function describe(values: number[]) {
   const n = values.length;
   if (!n) return null;
   const sorted = [...values].sort((a, b) => a - b);
@@ -19,13 +20,16 @@ export function columnStatistics(sheetId: string, colIndices: number[]): void {
   const sheet = st.project.sheets.find((s) => s.id === sheetId);
   if (!sheet) return;
   const idx = colIndices.length ? colIndices : sheet.columns.map((_, i) => i);
+  statisticsSheet(sheet.name, idx.filter((i) => sheet.columns[i]).map((i) => ({ name: sheet.columns[i].longName || columnLetter(i), values: sheet.columns[i].values })));
+}
+
+/** Create a "Statistics of …" sheet with one row per named set of values (those without numbers are left out). */
+export function statisticsSheet(of: string, sets: { name: string; values: CellValue[] }[]): void {
+  const st = useStore.getState();
   const rows: { name: string; stats: NonNullable<ReturnType<typeof describe>> }[] = [];
-  for (const i of idx) {
-    const c = sheet.columns[i];
-    if (!c) continue;
-    const nums = c.values.filter((v): v is number => typeof v === "number");
-    const s = describe(nums);
-    if (s) rows.push({ name: c.longName || columnLetter(i), stats: s });
+  for (const set of sets) {
+    const s = describe(set.values.filter((v): v is number => typeof v === "number"));
+    if (s) rows.push({ name: set.name, stats: s });
   }
   if (!rows.length) return;
   const mk = (name: string, d: Column["designation"], vals: Column["values"]): Column => {
@@ -37,7 +41,7 @@ export function columnStatistics(sheetId: string, colIndices: number[]): void {
   const r = (v: number) => (Number.isFinite(v) ? Number(v.toPrecision(8)) : null);
   const out: Sheet = {
     id: uid(),
-    name: uniqueName(`Statistics of ${sheet.name}`, st.project.sheets.map((s) => s.name)),
+    name: uniqueName(`Statistics of ${of}`, st.project.sheets.map((s) => s.name)),
     columns: [
       mk("Column", "label", rows.map((x) => x.name)),
       mk("N", "none", rows.map((x) => x.stats.n)),

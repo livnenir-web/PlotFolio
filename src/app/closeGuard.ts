@@ -36,7 +36,7 @@ export async function resolveClosePrompt(action: "save" | "discard" | "cancel"):
   if (!prompt || action === "cancel") return;
   if (action === "save") {
     const ok = await saveProject(false);
-    if (!ok) return; // the save dialog was cancelled: stay open
+    if (!ok) return; // the save dialog was canceled: stay open
   }
   // saved or deliberately discarded: nothing to recover next time. Quitting closes window by window; the
   // app exits with the last one.

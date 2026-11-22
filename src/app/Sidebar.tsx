@@ -7,6 +7,36 @@ import { exportSheetCsv } from "../export/csv";
 import { confirmDialog } from "../ui/confirm";
 import { popOutTab } from "./popout";
 import { useDialogs } from "./dialogs";
+import { keyHint } from "./shortcuts";
+import { createPortal } from "react-dom";
+import { layoutGraph } from "../graph/layout";
+import { GraphSvg } from "../graph/render/GraphSvg";
+
+const PEEK_DELAY_MS = 600;
+const PEEK_W = 240;
+const PEEK_H = 220;
+
+/** A small picture of a figure next to the sidebar, while the pointer rests on its name. */
+function GraphPeek({ graphId, top, left }: { graphId: string; top: number; left: number }) {
+  const project = useStore((s) => s.project);
+  const graph = project.graphs.find((g) => g.id === graphId);
+  if (!graph) return null;
+  const layout = layoutGraph(project, graph);
+  const k = Math.min(PEEK_W / layout.widthMm, PEEK_H / layout.heightMm);
+  const w = layout.widthMm * k;
+  const h = layout.heightMm * k;
+  return createPortal(
+    <div className="graph-peek" style={{ left, top: Math.max(8, Math.min(top - 12, window.innerHeight - h - 44)) }}>
+      <div className="paper" style={{ width: w, height: h, background: graph.canvas.background }}>
+        <GraphSvg layout={layout} background widthCss="100%" heightCss="100%" />
+      </div>
+      <div className="cap">
+        {graph.name} · {graph.layers.length > 1 ? `${graph.layers.length} panels` : `${graph.layers[0]?.plots.length ?? 0} plot${graph.layers[0]?.plots.length === 1 ? "" : "s"}`}
+      </div>
+    </div>,
+    document.body,
+  );
+}
 
 function RenameInput({ value, onDone }: { value: string; onDone: (v: string | null) => void }) {
   const [v, setV] = useState(value);
@@ -29,6 +59,8 @@ function RenameInput({ value, onDone }: { value: string; onDone: (v: string | nu
 }
 
 type DragPayload = { kind: "sheet" | "graph" | "folder"; id: string };
+/** What releasing a dragged row would do: put it into a folder (null = the project root), or next to a row of its kind. */
+type Drop = { type: "into"; folderId: string | null } | { type: "place"; refId: string; after: boolean; left: number; width: number; y: number };
 
 interface ItemRef {
   id: string;
@@ -48,8 +80,22 @@ export const Sidebar = memo(function Sidebar() {
   const openTab = useStore((s) => s.openTab);
   const [renaming, setRenaming] = useState<{ kind: "sheet" | "graph" | "folder"; id: string } | null>(null);
   const [dropTarget, setDropTarget] = useState<string | null | undefined>(undefined);
+  // where a dragged row would land between its neighbors
+  const [line, setLine] = useState<{ left: number; width: number; y: number } | null>(null);
   const [menu, openMenu] = useContextMenu();
   const st = useStore;
+  // filter by name (the search button in the header); null = not filtering
+  const [filter, setFilter] = useState<string | null>(null);
+  const query = (filter ?? "").trim().toLowerCase();
+  const matches = (name: string) => !query || name.toLowerCase().includes(query);
+  // figure preview while the pointer rests on a figure's name
+  const [peek, setPeek] = useState<{ id: string; top: number; left: number } | null>(null);
+  const peekTimer = useRef(0);
+  const stopPeek = () => {
+    window.clearTimeout(peekTimer.current);
+    setPeek(null);
+  };
+  useEffect(() => () => window.clearTimeout(peekTimer.current), []);
 
   const folderMenuItems = (parentId: string | null): MenuItem[] => {
     const subs = folders.filter((f) => f.parentId === parentId);
@@ -75,7 +121,7 @@ export const Sidebar = memo(function Sidebar() {
       const sheet = s.project.sheets.find((x) => x.id === tab.id)!;
       return [
         { label: "Open", onSelect: () => openTab(tab) },
-        { label: "Open in new window", shortcut: "⇧⌘O", onSelect: () => void popOutTab(tab) },
+        { label: "Open in new window", shortcut: keyHint("popOut"), onSelect: () => void popOutTab(tab) },
         { label: "Rename", onSelect: () => setRenaming(tab) },
         { label: "Duplicate", onSelect: () => s.duplicateSheet(tab.id) },
         moveMenu(tab),
@@ -88,7 +134,7 @@ export const Sidebar = memo(function Sidebar() {
     const g = s.project.graphs.find((x) => x.id === tab.id)!;
     return [
       { label: "Open", onSelect: () => openTab(tab) },
-      { label: "Open in new window", shortcut: "⇧⌘O", onSelect: () => void popOutTab(tab) },
+      { label: "Open in new window", shortcut: keyHint("popOut"), onSelect: () => void popOutTab(tab) },
       { label: "Rename", onSelect: () => setRenaming(tab) },
       { label: "Duplicate", onSelect: () => s.duplicateGraph(tab.id) },
       moveMenu(tab),
@@ -116,12 +162,27 @@ export const Sidebar = memo(function Sidebar() {
   const [drag, setDrag] = useState<{ payload: DragPayload; label: string; icon: string; x: number; y: number; active: boolean; startX: number; startY: number } | null>(null);
   const suppressClick = useRef(false);
 
-  const dropTargetAt = (x: number, y: number): string | null | undefined => {
+  const dropAt = (x: number, y: number, p: DragPayload): Drop | undefined => {
     const el = document.elementFromPoint(x, y) as HTMLElement | null;
-    const folderEl = el?.closest<HTMLElement>("[data-folder-id]");
-    if (folderEl) return folderEl.dataset.folderId!;
-    if (el?.closest(".sidebar")) return null; // root
-    return undefined;
+    if (!el?.closest(".sidebar")) return undefined;
+    const row = el.closest<HTMLElement>("[data-folder-id], [data-item-id]");
+    if (!row) return { type: "into", folderId: null }; // empty space: the root
+    const r = row.getBoundingClientRect();
+    const place = (after: boolean): Drop => ({ type: "place", refId: (row.dataset.folderId ?? row.dataset.itemId)!, after, left: r.left, width: r.width, y: after ? r.bottom : r.top });
+    if (row.dataset.folderId) {
+      if (p.kind !== "folder") return { type: "into", folderId: row.dataset.folderId };
+      if (row.dataset.folderId === p.id) return undefined;
+      // a folder over a folder: near an edge it goes next to that one, in the middle it goes inside
+      const t = (y - r.top) / r.height;
+      return t < 0.25 ? place(false) : t > 0.75 ? place(true) : { type: "into", folderId: row.dataset.folderId };
+    }
+    // over a sheet or figure: one of the same kind goes next to it, anything else joins its folder
+    if (row.dataset.itemKind === p.kind) return row.dataset.itemId === p.id ? undefined : place(y > r.top + r.height / 2);
+    return { type: "into", folderId: row.dataset.parent || null };
+  };
+  const showDrop = (d: Drop | undefined) => {
+    setDropTarget(d?.type === "into" ? d.folderId : undefined);
+    setLine(d?.type === "place" ? { left: d.left, width: d.width, y: d.y } : null);
   };
 
   // release outside the sidebar cancels the drag
@@ -130,7 +191,7 @@ export const Sidebar = memo(function Sidebar() {
     const up = (e: PointerEvent) => {
       if ((e.target as HTMLElement | null)?.closest?.(".sidebar")) return; // handled by the sidebar itself
       setDrag(null);
-      setDropTarget(undefined);
+      showDrop(undefined);
     };
     window.addEventListener("pointerup", up);
     return () => window.removeEventListener("pointerup", up);
@@ -145,42 +206,70 @@ export const Sidebar = memo(function Sidebar() {
     const active = drag.active || Math.hypot(e.clientX - drag.startX, e.clientY - drag.startY) > 5;
     if (!active) return;
     setDrag({ ...drag, x: e.clientX, y: e.clientY, active: true });
-    setDropTarget(dropTargetAt(e.clientX, e.clientY));
+    showDrop(dropAt(e.clientX, e.clientY, drag.payload));
   };
   const endDrag = (e: React.PointerEvent) => {
     if (!drag) return;
     if (drag.active) {
-      const target = dropTargetAt(e.clientX, e.clientY);
       const p = drag.payload;
-      if (target !== undefined) {
+      const d = dropAt(e.clientX, e.clientY, p);
+      if (d?.type === "into") {
         if (p.kind === "folder") {
-          if (target !== p.id) st.getState().moveFolder(p.id, target);
-        } else st.getState().moveToFolder({ kind: p.kind, id: p.id }, target);
+          if (d.folderId !== p.id) st.getState().moveFolder(p.id, d.folderId);
+        } else st.getState().moveToFolder({ kind: p.kind, id: p.id }, d.folderId);
+      } else if (d?.type === "place") {
+        if (p.kind === "folder") st.getState().placeFolder(p.id, d.refId, d.after);
+        else st.getState().placeItem({ kind: p.kind, id: p.id }, d.refId, d.after);
       }
       suppressClick.current = true;
       setTimeout(() => (suppressClick.current = false), 0);
     }
     setDrag(null);
-    setDropTarget(undefined);
+    showDrop(undefined);
   };
 
   const columnDropGraph = useDialogs((s) => s.columnDrag?.overGraphId ?? null);
-  const renderItem = (tab: TabRef, name: string, icon: string, depth: number) => {
+  // with folders in the project, sheets and figures are indented by the width of the folding arrow, so all icons line up
+  const hasFolders = folders.length > 0;
+  /** While filtering: does this folder (or a folder inside it) hold a sheet or figure that matches? */
+  const folderHasMatch = (id: string): boolean =>
+    sheets.some((x) => x.folderId === id && matches(x.name)) || graphs.some((x) => x.folderId === id && matches(x.name)) || folders.some((f) => f.parentId === id && folderHasMatch(f.id));
+  const renderItem = (tab: TabRef, name: string, icon: string, depth: number, parentId: string | null) => {
     const active = sameTab(activeTab, tab);
     const isRenaming = renaming && renaming.kind === tab.kind && renaming.id === tab.id;
     return (
       <div
         key={tab.kind + tab.id}
         data-graph-id={tab.kind === "graph" ? tab.id : undefined}
+        data-item-kind={tab.kind}
+        data-item-id={tab.id}
+        data-parent={parentId ?? ""}
         className={"item" + (active ? " active" : "") + (tab.kind === "graph" && columnDropGraph === tab.id ? " drop" : "")}
-        style={{ paddingLeft: 8 + depth * 14 }}
-        onPointerDown={(e) => startDrag(e, { kind: tab.kind, id: tab.id }, name, icon)}
+        style={{ paddingLeft: 8 + depth * 14 + (hasFolders ? 18 : 0) }}
+        onPointerDown={(e) => {
+          stopPeek();
+          startDrag(e, { kind: tab.kind, id: tab.id }, name, icon);
+        }}
         onClick={() => !suppressClick.current && openTab(tab)}
         onDoubleClick={() => setRenaming(tab)}
-        onContextMenu={(e) => openMenu(e, itemMenu(tab))}
-        title={name}
+        onContextMenu={(e) => {
+          stopPeek();
+          openMenu(e, itemMenu(tab));
+        }}
+        onMouseEnter={
+          tab.kind === "graph" && !active
+            ? (e) => {
+                const r = e.currentTarget.getBoundingClientRect();
+                const side = e.currentTarget.closest(".sidebar")?.getBoundingClientRect();
+                window.clearTimeout(peekTimer.current);
+                peekTimer.current = window.setTimeout(() => setPeek({ id: tab.id, top: r.top, left: (side?.right ?? r.right) + 6 }), PEEK_DELAY_MS);
+              }
+            : undefined
+        }
+        onMouseLeave={tab.kind === "graph" ? stopPeek : undefined}
+        title={tab.kind === "graph" && !active ? undefined : name}
       >
-        <Icon name={icon} size={15} style={{ color: active ? "var(--accent)" : "var(--text-2)", flex: "none" }} />
+        <Icon name={icon} size={15} style={{ color: "var(--text-2)", flex: "none" }} />
         {isRenaming ? (
           <RenameInput
             value={name}
@@ -200,9 +289,9 @@ export const Sidebar = memo(function Sidebar() {
   };
 
   const renderFolder = (parentId: string | null, depth: number): React.ReactNode => {
-    const subs = folders.filter((f) => f.parentId === parentId);
-    const sh = sheets.filter((s) => (s.folderId ?? null) === parentId);
-    const gr = graphs.filter((g) => (g.folderId ?? null) === parentId);
+    const subs = folders.filter((f) => f.parentId === parentId && (!query || folderHasMatch(f.id)));
+    const sh = sheets.filter((s) => (s.folderId ?? null) === parentId && matches(s.name));
+    const gr = graphs.filter((g) => (g.folderId ?? null) === parentId && matches(g.name));
     return (
       <>
         {subs.map((f) => {
@@ -224,7 +313,7 @@ export const Sidebar = memo(function Sidebar() {
                 onContextMenu={(e) => openMenu(e, folderMenu(f))}
                 title={isCurrent ? "New sheets and graphs go here" : f.name}
               >
-                <Icon name="chevron" size={11} style={{ transform: f.collapsed ? "none" : "rotate(90deg)", color: "var(--text-3)", flex: "none", transition: "transform .12s" }} />
+                <Icon name="chevron" size={11} style={{ transform: f.collapsed && !query ? "none" : "rotate(90deg)", color: "var(--text-3)", flex: "none", transition: "transform .12s" }} />
                 <Icon name="folder" size={15} style={{ color: "var(--text-2)", flex: "none" }} />
                 {isRenaming ? (
                   <RenameInput
@@ -238,17 +327,26 @@ export const Sidebar = memo(function Sidebar() {
                   <span className="name">{f.name}</span>
                 )}
               </div>
-              {!f.collapsed && renderFolder(f.id, depth + 1)}
+              {(!f.collapsed || !!query) && renderFolder(f.id, depth + 1)}
             </div>
           );
         })}
-        {sh.map((s) => renderItem({ kind: "sheet", id: s.id }, s.name, "table", depth))}
-        {gr.map((g) => renderItem({ kind: "graph", id: g.id }, g.name, "chart", depth))}
+        {sh.map((s) => renderItem({ kind: "sheet", id: s.id }, s.name, "table", depth, parentId))}
+        {gr.map((g) => renderItem({ kind: "graph", id: g.id }, g.name, "chart", depth, parentId))}
       </>
     );
   };
 
   const rootEmpty = sheets.length === 0 && graphs.length === 0 && folders.length === 0;
+  const noMatch = !!query && !sheets.some((x) => matches(x.name)) && !graphs.some((x) => matches(x.name));
+  const newMenu = (e: React.MouseEvent) => {
+    const r = (e.currentTarget as HTMLElement).getBoundingClientRect();
+    openMenu({ clientX: r.left, clientY: r.bottom + 2 }, [
+      { label: "New sheet", onSelect: () => st.getState().addSheet() },
+      { label: "New graph", onSelect: () => st.getState().addGraph() },
+      { label: "New folder", onSelect: () => setRenaming({ kind: "folder", id: st.getState().addFolder("New folder", currentFolderId) }) },
+    ]);
+  };
 
   return (
     <div
@@ -257,7 +355,7 @@ export const Sidebar = memo(function Sidebar() {
       onPointerUp={endDrag}
       onPointerCancel={() => {
         setDrag(null);
-        setDropTarget(undefined);
+        showDrop(undefined);
       }}
       onContextMenu={(e) => {
         if ((e.target as HTMLElement).closest(".item")) return;
@@ -272,23 +370,38 @@ export const Sidebar = memo(function Sidebar() {
       }}
     >
       <div className="section">
-        <span onClick={() => st.getState().setCurrentFolder(null)} title="Project root — drop items on empty sidebar space to move them here" style={{ cursor: "default" }}>
+        <span onClick={() => st.getState().setCurrentFolder(null)} title="Project root — drop items on empty sidebar space to move them here. Drag a sheet, figure or folder between others of its kind to change the order." style={{ cursor: "default" }}>
           Project
         </span>
         <span style={{ display: "flex", gap: 2 }}>
-          <button className="icon-btn tiny" title="New folder" onClick={() => setRenaming({ kind: "folder", id: st.getState().addFolder("New folder", currentFolderId) })}>
-            <Icon name="folderPlus" size={13} />
+          <button className={"icon-btn tiny" + (filter !== null ? " on" : "")} title="Find a sheet or figure by name" onClick={() => setFilter(filter === null ? "" : null)}>
+            <Icon name="search" size={13} />
           </button>
-          <button className="icon-btn tiny" title="New sheet" onClick={() => st.getState().addSheet()}>
-            <Icon name="table" size={13} />
-          </button>
-          <button className="icon-btn tiny" title="New graph" onClick={() => st.getState().addGraph()}>
-            <Icon name="chart" size={13} />
+          <button className="icon-btn tiny" title="New sheet, graph or folder (in the folder you clicked last)" onClick={newMenu}>
+            <Icon name="plus" size={14} />
           </button>
         </span>
       </div>
+      {filter !== null && (
+        <div className="sidebar-filter">
+          <input
+            className="input"
+            autoFocus
+            placeholder="Find by name"
+            value={filter}
+            onChange={(e) => setFilter(e.target.value)}
+            onKeyDown={(e) => {
+              e.stopPropagation();
+              if (e.key === "Escape") setFilter(null);
+            }}
+          />
+        </div>
+      )}
       {renderFolder(null, 0)}
       {rootEmpty && <div className="empty">Empty project</div>}
+      {noMatch && <div className="empty">Nothing with that name</div>}
+      {peek && !drag?.active && <GraphPeek graphId={peek.id} top={peek.top} left={peek.left} />}
+      {drag?.active && line && <div className="reorder-line" style={{ left: line.left, top: line.y - 1, width: line.width, height: 2 }} />}
       {drag?.active && (
         <div className="drag-ghost" style={{ left: drag.x, top: drag.y }}>
           <Icon name={drag.icon} size={13} /> {drag.label}

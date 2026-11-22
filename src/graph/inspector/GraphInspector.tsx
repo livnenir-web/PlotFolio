@@ -1,17 +1,19 @@
 import { useStore } from "../../model/store";
 import { defaultColormap, newAxis } from "../../model/defaults";
 import type { Axis, BandConnect, DataLabels, Graph, Layer, LineConnect, LineStyle, MarkerShape, NumberFormat, Plot, Selection, TextItem } from "../../model/types";
-import { CheckField, ColorField, FontFields, Group, InspectorPanel, NumberField, OpacityField, Row, Segmented, SelectField, TextField } from "../../ui/Fields";
+import { CheckField, ColorField, FontFields, Group, InTab, InspectorPanel, NumberField, OpacityField, PanelTabs, Row, Segmented, SelectField, TextField } from "../../ui/Fields";
 import { Icon } from "../../ui/Icon";
-import { layoutGraph, layoutLayer, CANVAS_MARGIN_MM } from "../layout";
-import { useMemo, useState } from "react";
+import { reorderRow } from "../../ui/reorder";
+import { axisLookOf, layoutGraph, layoutLayer, CANVAS_MARGIN_MM } from "../layout";
+import { useMemo, useRef, useState } from "react";
 import { SYMBOL_LIST } from "../textMarkup";
 import { defaultHistogramOptions } from "../data";
 import { shapeSmoothing } from "../paths";
 import { useDialogs } from "../../app/dialogs";
 import { validateFunction } from "../functionPlot";
 import { isLogScale } from "../ticks";
-import type { CoordMode, Shape } from "../../model/types";
+import type { CoordMode, LineEnd, Shape, TextStyle } from "../../model/types";
+import { lineEndOf } from "../paths";
 
 /** mm ⇄ axis-units switch for a positioned object; converts the stored values so the object stays put. */
 function CoordModeField({ graph, layer, mode, onSwitch }: { graph: Graph; layer: Layer; mode: CoordMode; onSwitch: (to: CoordMode, ll: ReturnType<typeof layoutLayer>) => void }) {
@@ -19,7 +21,7 @@ function CoordModeField({ graph, layer, mode, onSwitch }: { graph: Graph; layer:
   const ll = useMemo(() => layoutLayer(useStore.getState().project, layer), [sheets, layer]);
   void graph;
   return (
-    <Row label="Position in" title="Millimetres on the canvas, or values on this layer's axes (the object then follows the axis range)">
+    <Row label="Position in" title="Millimeters on the canvas, or values on this layer's axes (the object then follows the axis range)">
       <Segmented
         value={mode}
         options={[
@@ -36,9 +38,14 @@ import { AddPlotBlock, PlotSourceFields } from "./PlotSourceFields";
 import { BreaksEditor } from "./BreaksEditor";
 import { formatCustomTicks, parseCustomTicks } from "../customTicks";
 import { PALETTES, paletteIdOf } from "../../model/palettes";
-import { applyPalette, applyPlotStyle, applyStyleToPlots, copyPlotStyle, forEachTextStyle, pastedPlotStyle, plotStyleOf, textStylesOf } from "../../model/figure";
+import { groupMembers, groupOf } from "../../model/plotGroups";
+import { PlotGroupSection, PlotList } from "./PlotGroups";
+import { keyHint } from "../../app/shortcuts";
+import { ALT_KEY, formatKeys, MOD_KEY } from "../../app/menuModel";
+import { setLayerShown, setPlotShown, soloLayer, applyPalette, applyPlotStyle, applyStyleToPlots, copyPlotStyle, forEachTextStyle, hasLegendOrder, legendOrder, moveLegendEntry, pastedPlotStyle, placeLegendEntry, plotStyleOf, resetLegendOrder, textStylesOf } from "../../model/figure";
 import { FONT_FAMILIES } from "../../ui/Fields";
 import { loadImageSize, pickImageFile } from "../../io/images";
+import { AnimationGroup } from "./AnimationFields";
 import { BarFields, BoxFields, ColormapFields, ColorScaleFields, ContourFields, MatrixSourceFields, SurfaceFields, View3DFields } from "./PlotTypeFields";
 
 export function GraphInspector({ graphId }: { graphId: string }) {
@@ -47,15 +54,16 @@ export function GraphInspector({ graphId }: { graphId: string }) {
   if (!graph) return null;
   const sel = "graphId" in selection && selection.graphId === graphId ? selection : ({ kind: "canvas", graphId } as Selection);
   const layer = "layerId" in sel ? graph.layers.find((l) => l.id === sel.layerId) : undefined;
-  if (sel.kind === "axis" && layer) return <AxisInspector graph={graph} layer={layer} which={sel.axis} />;
+  // every panel is keyed by the object it edits, so nothing typed for one object is carried over to the next
+  if (sel.kind === "axis" && layer) return <AxisInspector key={layer.id + sel.axis} graph={graph} layer={layer} which={sel.axis} />;
   if (sel.kind === "plot" && layer) {
     const plot = layer.plots.find((p) => p.id === sel.plotId);
     if (plot) return <PlotInspector key={plot.id} graph={graph} layer={layer} plot={plot} />;
   }
-  if (sel.kind === "legend" && layer) return <LegendInspector graph={graph} layer={layer} />;
+  if (sel.kind === "legend" && layer) return <LegendInspector key={layer.id} graph={graph} layer={layer} />;
   if (sel.kind === "colorScale" && layer)
     return (
-      <InspectorPanel kind="colorScale" defaultOpen="Color scale">
+      <InspectorPanel key={layer.id} kind="colorScale" defaultOpen="Color scale">
         <Head icon="legend" title="Color scale" />
         <Breadcrumb graph={graph} layer={layer} />
         <ColorScaleFields graph={graph} layer={layer} />
@@ -69,8 +77,8 @@ export function GraphInspector({ graphId }: { graphId: string }) {
     const sh = layer.shapes?.find((x) => x.id === sel.shapeId);
     if (sh) return <ShapeInspector key={sh.id} graph={graph} layer={layer} shape={sh} />;
   }
-  if (sel.kind === "layer" && layer) return <LayerInspector graph={graph} layer={layer} />;
-  return <CanvasInspector graph={graph} />;
+  if (sel.kind === "layer" && layer) return <LayerInspector key={layer.id} graph={graph} layer={layer} />;
+  return <CanvasInspector key={graph.id} graph={graph} />;
 }
 
 function Head({ icon, title, children }: { icon: string; title: string; children?: React.ReactNode }) {
@@ -85,6 +93,7 @@ function Head({ icon, title, children }: { icon: string; title: string; children
 function Breadcrumb({ graph, layer }: { graph: Graph; layer?: Layer }) {
   const st = useStore;
   return (
+    <>
     <div className="crumbs">
       <span onClick={() => st.getState().setSelection({ kind: "canvas", graphId: graph.id })}>{graph.name}</span>
       {layer && (
@@ -94,20 +103,49 @@ function Breadcrumb({ graph, layer }: { graph: Graph; layer?: Layer }) {
         </>
       )}
     </div>
+    {layer?.hidden && <HiddenLayerNote graph={graph} layer={layer} />}
+    </>
+  );
+}
+
+/** "3 plots", with the hidden ones counted apart: "3 plots, 1 hidden". */
+function plotCount(l: Layer): string {
+  const hidden = l.plots.filter((p) => !p.visible).length;
+  return `${l.plots.length} plot${l.plots.length === 1 ? "" : "s"}${hidden ? `, ${hidden} hidden` : ""}`;
+}
+
+/** Shown wherever a hidden layer or something in it is being edited: nothing of it is on the canvas, which would otherwise look like a fault. */
+function HiddenLayerNote({ graph, layer }: { graph: Graph; layer: Layer }) {
+  return (
+    <div className="note hidden-note">
+      <span>{layer.name} is hidden: it is not drawn or exported.</span>
+      <button className="btn small" onClick={() => useStore.getState().updateLayer(graph.id, layer.id, (l) => setLayerShown(l, true))}>
+        Show
+      </button>
+    </div>
   );
 }
 
 // ---------------------------------------------------------------- canvas
+
+/** The figure inspector in three parts: the page and its layers, the look of the whole figure, and its animation. */
+const FIGURE_TABS = [
+  { id: "figure", label: "Figure" },
+  { id: "style", label: "Style" },
+  { id: "animation", label: "Animation" },
+];
 
 function CanvasInspector({ graph }: { graph: Graph }) {
   const st = useStore;
   const sheets = useStore((s) => s.project.sheets);
   const update = (fn: (g: Graph) => void) => st.getState().updateGraph(graph.id, fn);
   const layout = useMemo(() => layoutGraph(st.getState().project, graph), [sheets, graph, st]);
+  const soloAlt = useRef(false);
   return (
-    <InspectorPanel kind="canvas" defaultOpen="Canvas">
+    <InspectorPanel kind="canvas" defaultOpen="Canvas" tabs={FIGURE_TABS}>
       <Head icon="chart" title={graph.name} />
-      <Group title="Canvas">
+      <PanelTabs />
+      <Group title="Canvas" info="The canvas is the exported page. Anything placed outside it (drafts, supporting data) stays in the project and on screen, veiled, but is left out of every export. Figure size is set per layer (the data area). SVG exports have no background.">
         <Row label="Name">
           <TextField value={graph.name} onCommit={(v) => v.trim() && st.getState().renameGraph(graph.id, v.trim())} />
         </Row>
@@ -137,11 +175,16 @@ function CanvasInspector({ graph }: { graph: Graph }) {
         <Row label="Background">
           <ColorField value={graph.canvas.background} onChange={(v) => update((g) => void (g.canvas.background = v))} />
         </Row>
-        <div className="hint">Figure size is set per layer (the data area). The canvas is the exported page; SVG exports have no background.</div>
       </Group>
-      <FigureGroup graph={graph} />
+      <InTab tab="style">
+        <FigureGroup graph={graph} />
+      </InTab>
+      <InTab tab="animation">
+        <AnimationGroup graph={graph} />
+      </InTab>
       <Group
         title="Layers"
+        info="Click a layer to edit it. Drag one to change the drawing order: lower in the list draws on top. Untick a layer to hide it: it stays in the figure with its plots, but is not drawn or exported."
         right={
           <button className="btn small" onClick={() => st.getState().setSelection({ kind: "layer", graphId: graph.id, layerId: st.getState().addLayer(graph.id) })}>
             Add
@@ -149,15 +192,28 @@ function CanvasInspector({ graph }: { graph: Graph }) {
         }
       >
         {graph.layers.map((l) => (
-          <div key={l.id} className="list-item" onClick={() => st.getState().setSelection({ kind: "layer", graphId: graph.id, layerId: l.id })}>
-            <Icon name="layer" size={13} /> {l.name}
-            <span className="hint" style={{ marginLeft: "auto" }}>
-              {l.plots.length} plot{l.plots.length === 1 ? "" : "s"}
-            </span>
+          <div key={l.id} className="list-item" {...reorderRow(`layers:${graph.id}`, l.id, (from, to) => st.getState().moveLayer(graph.id, from, to))} onClick={() => st.getState().setSelection({ kind: "layer", graphId: graph.id, layerId: l.id })}>
+            <Icon name="layer" size={13} style={{ opacity: l.hidden ? 0.4 : 1 }} />
+            <span style={{ flex: 1, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", opacity: l.hidden ? 0.55 : 1 }}>{l.name}</span>
+            <span className="hint">{plotCount(l)}</span>
+            <input
+              type="checkbox"
+              checked={!l.hidden}
+              title={`Visible. With ${ALT_KEY}: show only this layer (again: all of them)`}
+              onClick={(e) => {
+                e.stopPropagation();
+                soloAlt.current = e.altKey;
+              }}
+              onChange={(e) => {
+                const v = e.target.checked;
+                if (soloAlt.current) update((g) => soloLayer(g, l.id));
+                else st.getState().updateLayer(graph.id, l.id, (x) => setLayerShown(x, v));
+              }}
+            />
           </div>
         ))}
       </Group>
-      <Group title="Export">
+      <Group>
         <button className="btn" onClick={() => useDialogs.getState().setExportDialog({ graphId: graph.id })}>
           <Icon name="export" size={13} /> Export as PNG / JPEG / SVG…
         </button>
@@ -184,7 +240,7 @@ function FigureGroup({ graph }: { graph: Graph }) {
     update((g) => forEachTextStyle(g, (x) => void (x.sizePt = Math.max(1, Math.round(fn(x.sizePt) * 2) / 2))));
   return (
     <Group title="Whole figure">
-      <Row label="Font" title="Font family of every text in the figure: axis titles, tick labels, legends, colour-scale titles and text labels">
+      <Row label="Font" title="Font family of every text in the figure: axis titles, tick labels, legends, color-scale titles and text labels">
         <SelectField
           value={font}
           options={[...(font ? [] : [{ value: "", label: fonts.size > 1 ? "Mixed" : "—" }]), ...FONT_FAMILIES.map((f) => ({ value: f, label: f }))]}
@@ -200,14 +256,14 @@ function FigureGroup({ graph }: { graph: Graph }) {
         </button>
         <NumberField value={null} placeholder="all = …" step={0.5} min={1} onCommit={(v) => v > 0 && resize(() => v)} style={{ width: 62 }} />
       </Row>
-      <Row label="Text colour" title="Colour of every text in the figure">
+      <Row label="Text color" title="Color of every text in the figure">
         <ColorField value={colors.size === 1 ? styles[0].color : "#000000"} onChange={(c) => update((g) => forEachTextStyle(g, (x) => void (x.color = c)))} />
         {colors.size > 1 && <span className="hint">mixed</span>}
       </Row>
-      <Row label="Palette" title="Recolour every plot of every layer with this palette, in order">
+      <Row label="Palette" title={`Recolor every plot of every layer with this palette, in order.${currentPalette?.note ? ` ${currentPalette.name}: ${currentPalette.note}.` : currentPalette ? "" : " Plots keep their own colors until you pick one."}`}>
         <SelectField
           value={currentPalette?.id ?? ""}
-          options={[...(currentPalette ? [] : [{ value: "", label: nPlots ? "Custom colours" : "—" }]), ...PALETTES.map((p) => ({ value: p.id, label: p.name }))]}
+          options={[...(currentPalette ? [] : [{ value: "", label: nPlots ? "Custom colors" : "—" }]), ...PALETTES.map((p) => ({ value: p.id, label: p.name }))]}
           onChange={(id) => {
             const pal = PALETTES.find((p) => p.id === id);
             if (pal) update((g) => applyPalette(g, pal.colors));
@@ -223,13 +279,12 @@ function FigureGroup({ graph }: { graph: Graph }) {
         <button
           className="btn small"
           disabled={!currentPalette || paletteIdOf(defaults.colors) === currentPalette.id}
-          title="Use this palette for new plots in every graph of the project (Settings ▸ Colors)"
+          title="Use this palette for new plots in every graph of the project (Settings ▸ Palette)"
           onClick={() => currentPalette && useStore.setState((s) => ({ project: { ...s.project, defaults: { ...s.project.defaults, colors: [...currentPalette.colors] } }, dirty: true }))}
         >
           Make it the project default
         </button>
       </Row>
-      <div className="hint">{currentPalette ? `${currentPalette.name}${currentPalette.note ? ` — ${currentPalette.note}` : ""}.` : "Plots keep their own colours until you pick a palette."}</div>
     </Group>
   );
 }
@@ -241,8 +296,15 @@ function useCoSelected<K extends Selection["kind"]>(kind: K): Extract<Selection,
   return useStore((s) => s.ui.multi).filter((x): x is Extract<Selection, { kind: K }> => x.kind === kind);
 }
 function MultiHint({ n, what }: { n: number; what: string }) {
-  return n > 0 ? <div className="hint">Editing {n + 1} selected {what} together.</div> : null;
+  return n > 0 ? <div className="note">Editing {n + 1} selected {what} together.</div> : null;
 }
+
+/** The layer inspector in three parts: what it shows, its axes, and where it sits on the canvas. */
+const LAYER_TABS = [
+  { id: "plots", label: "Plots" },
+  { id: "axes", label: "Axes" },
+  { id: "layout", label: "Layout" },
+];
 
 function LayerInspector({ graph, layer }: { graph: Graph; layer: Layer }) {
   const st = useStore;
@@ -258,16 +320,32 @@ function LayerInspector({ graph, layer }: { graph: Graph; layer: Layer }) {
     });
   const f = layer.frame;
   return (
-    <InspectorPanel kind="layer" defaultOpen="Layer">
+    <InspectorPanel kind="layer" defaultOpen="Plots" tabs={LAYER_TABS}>
       <Head icon="layer" title={layer.name} />
       <Breadcrumb graph={graph} />
-      <Group title="Layer">
+      {layer.hidden && <HiddenLayerNote graph={graph} layer={layer} />}
+      <PanelTabs />
+      <MultiHint n={others.length} what="layers" />
+      <Group tab="layout">
         <Row label="Name">
           <TextField value={layer.name} onCommit={(v) => v.trim() && updOne((l) => void (l.name = v.trim()))} />
         </Row>
-        <MultiHint n={others.length} what="layers" />
+        <Row label="">
+          <CheckField label="Visible" checked={!layer.hidden} onChange={(v) => upd((l) => setLayerShown(l, v))} />
+        </Row>
+        <Row wrap label="">
+          <button className="btn small" onClick={() => st.getState().setSelection({ kind: "layer", graphId: graph.id, layerId: st.getState().addLayer(graph.id, layer) })}>
+            Duplicate
+          </button>
+          <button className="btn small" title={`Copy the layer; paste it into any graph with ${formatKeys("Mod+V")}`} onClick={() => st.getState().setLayerClipboard([layer])}>
+            Copy
+          </button>
+          <button className="btn small" disabled={graph.layers.length < 2} onClick={() => void confirmDialog("Delete this layer and its plots?").then((ok) => ok && st.getState().deleteLayer(graph.id, layer.id))}>
+            Delete
+          </button>
+        </Row>
       </Group>
-      <Group title="Figure size (data area, mm)">
+      <Group title="Figure size (data area, mm)" tab="layout" info="Drag the layer on the canvas to move it, or drag a corner to resize. Shift keeps it square.">
         <Row label="Width × height">
           <NumberField value={f.wMm} min={5} step={1} onCommit={(v) => upd((l) => void (l.frame.wMm = v))} />
           <NumberField value={f.hMm} min={5} step={1} onCommit={(v) => upd((l) => void (l.frame.hMm = v))} />
@@ -276,9 +354,8 @@ function LayerInspector({ graph, layer }: { graph: Graph; layer: Layer }) {
           <NumberField value={f.xMm} step={1} onCommit={(v) => upd((l) => void (l.frame.xMm = v))} />
           <NumberField value={f.yMm} step={1} onCommit={(v) => upd((l) => void (l.frame.yMm = v))} />
         </Row>
-        <div className="hint">Drag the layer on the canvas to move it, or drag a corner to resize. Shift keeps it square.</div>
       </Group>
-      <Group title="Axes">
+      <Group title="Axes" tab="axes">
         {(["x", "y", "y2", "z"] as const).map((w) =>
           layer.axes[w] ? (
             <div key={w} className="list-item" onClick={() => st.getState().setSelection({ kind: "axis", graphId: graph.id, layerId: layer.id, axis: w })}>
@@ -305,7 +382,7 @@ function LayerInspector({ graph, layer }: { graph: Graph; layer: Layer }) {
         <Row label="">
           <button
             className="btn small"
-            title="Copy this layer's axis styling (fonts, ticks, line widths) to every layer in this graph"
+            title="Copy the look of this layer's axes (fonts, tick direction and length, line, mirror and grid) to every layer in this graph"
             onClick={() =>
               st.getState().updateGraph(graph.id, (g) => {
                 const src = g.layers.find((l) => l.id === layer.id)!;
@@ -323,7 +400,6 @@ function LayerInspector({ graph, layer }: { graph: Graph; layer: Layer }) {
                       minorTickMm: s.minorTickMm,
                       lineWidthPt: s.lineWidthPt,
                       color: s.color,
-                      minorCount: s.minorCount,
                       titleGapMm: s.titleGapMm,
                       mirror: s.mirror,
                       grid: s.grid,
@@ -334,68 +410,47 @@ function LayerInspector({ graph, layer }: { graph: Graph; layer: Layer }) {
               })
             }
           >
-            Apply axis style to all layers
+            Apply style to all layers
           </button>
         </Row>
       </Group>
-      {layer.view3d && <View3DFields graph={graph} layer={layer} />}
+      <InTab tab="axes">{layer.view3d && <View3DFields graph={graph} layer={layer} />}</InTab>
       {layer.colorScale && (
-        <Group title="Color scale">
-          <Row label="">
-            <CheckField label="Show color scale" checked={layer.colorScale.visible} onChange={(v) => upd((l) => void (l.colorScale!.visible = v))} />
+        <Group tab="axes">
+          <Row label="Color scale">
+            <CheckField label="Show" checked={layer.colorScale.visible} onChange={(v) => upd((l) => void (l.colorScale!.visible = v))} />
             <button className="btn small" onClick={() => st.getState().setSelection({ kind: "colorScale", graphId: graph.id, layerId: layer.id })}>
               Settings…
             </button>
           </Row>
         </Group>
       )}
-      <Group title="Plots">
-        {layer.plots.length === 0 && <div className="hint">No plots yet. Pick the vectors below, or use Plot on a sheet.</div>}
-        {layer.plots.map((p, i) => (
-          <div key={p.id} className="list-item" onClick={() => st.getState().setSelection({ kind: "plot", graphId: graph.id, layerId: layer.id, plotId: p.id })}>
-            <span className="swatch" style={{ background: p.color }} />
-            <span style={{ flex: 1, overflow: "hidden", textOverflow: "ellipsis" }}>{p.name}</span>
-            <button className="icon-btn tiny" title="Draw later (on top)" disabled={i === layer.plots.length - 1} onClick={(e) => { e.stopPropagation(); st.getState().movePlot(graph.id, layer.id, p.id, 1); }}>
-              <Icon name="chevron" size={11} style={{ transform: "rotate(90deg)" }} />
-            </button>
-            <button className="icon-btn tiny" title="Draw earlier (behind)" disabled={i === 0} onClick={(e) => { e.stopPropagation(); st.getState().movePlot(graph.id, layer.id, p.id, -1); }}>
-              <Icon name="chevron" size={11} style={{ transform: "rotate(-90deg)" }} />
-            </button>
-            <input type="checkbox" checked={p.visible} onClick={(e) => e.stopPropagation()} onChange={(e) => st.getState().updatePlot(graph.id, layer.id, p.id, (pl) => void (pl.visible = e.target.checked))} title="Visible" />
-          </div>
-        ))}
-        {layer.plots.length > 1 && <div className="hint">Order = drawing order: lower in the list draws on top. The legend follows it.</div>}
+      <Group title="Plots" info={`Click a plot to select it, ${MOD_KEY}-click or Shift-click for several; double-click opens its details. Selected plots can be grouped${keyHint("group") ? ` (on the figure: Shift-click curves, then ${keyHint("group")})` : ""} or edited together. Drag a plot or a group, or use its arrows, to change the drawing order: lower in the list draws on top; the legend follows this order unless its entries are reordered (Legend ▸ Settings… ▸ Entries).`}>
+        <PlotList graph={graph} layer={layer} />
       </Group>
       <Group title="Add plot">
         <AddPlotBlock key={layer.id} graphId={graph.id} layerId={layer.id} />
       </Group>
-      <Group title="Legend">
-        <CheckField label="Show legend" checked={layer.legend.visible} onChange={(v) => upd((l) => void (l.legend.visible = v))} />
-        <Row label="">
+      <Group>
+        <Row label="Legend">
+          <CheckField label="Show" checked={layer.legend.visible} onChange={(v) => upd((l) => void (l.legend.visible = v))} />
           <button className="btn small" onClick={() => st.getState().setSelection({ kind: "legend", graphId: graph.id, layerId: layer.id })}>
-            Legend settings…
+            Settings…
           </button>
         </Row>
-      </Group>
-      <Group title="Actions">
-        <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
-          <button className="btn small" onClick={() => st.getState().setSelection({ kind: "layer", graphId: graph.id, layerId: st.getState().addLayer(graph.id, layer) })}>
-            Duplicate
-          </button>
-          <button className="btn small" onClick={() => st.getState().setLayerClipboard([layer])}>
-            Copy
-          </button>
-          <button className="btn small" disabled={graph.layers.length < 2} onClick={() => void confirmDialog("Delete this layer and its plots?").then((ok) => ok && st.getState().deleteLayer(graph.id, layer.id))}>
-            Delete
-          </button>
-        </div>
-        <div className="hint">Paste a copied layer into any graph with ⌘V.</div>
       </Group>
     </InspectorPanel>
   );
 }
 
 // ---------------------------------------------------------------- axis
+
+/** The axis inspector in three parts: range and ticks, the texts, and how the axis is drawn. */
+const AXIS_TABS = [
+  { id: "scale", label: "Scale" },
+  { id: "labels", label: "Labels" },
+  { id: "style", label: "Style" },
+];
 
 function AxisInspector({ graph, layer, which }: { graph: Graph; layer: Layer; which: "x" | "y" | "y2" | "z" }) {
   const st = useStore;
@@ -417,21 +472,30 @@ function AxisInspector({ graph, layer, which }: { graph: Graph; layer: Layer; wh
           }
         });
   const linked = which !== "x" && axis.sameAsX;
+  const setSameAsX = (v: boolean) =>
+    st.getState().updateGraph(graph.id, (g) => {
+      for (const ref of [{ layerId: layer.id, axis: which }, ...others]) {
+        const l = g.layers.find((x) => x.id === ref.layerId);
+        const a = l?.axes[ref.axis];
+        if (!l || !a || ref.axis === "x") continue;
+        // unlinking keeps the look: the axis starts from what it was drawn with
+        if (!v && a.sameAsX) Object.assign(a, axisLookOf(l.axes.x));
+        a.sameAsX = v;
+      }
+    });
   const styleSrc = linked ? layer.axes.x : axis;
   const name = which === "x" ? "X axis" : which === "y" ? "Y axis" : which === "z" ? "Z axis" : "Right Y axis";
   return (
-    <InspectorPanel kind="axis" defaultOpen="Scale">
+    <InspectorPanel kind="axis" defaultOpen="Scale" tabs={AXIS_TABS}>
       <Head icon="axis" title={name} />
       <Breadcrumb graph={graph} layer={layer} />
+      <PanelTabs />
       <MultiHint n={others.length} what="axes" />
-      <Group title="Title">
+      <Group title="Title" tab="labels" info={'Shift+Enter starts a second line. Markup: \\alpha \\mu \\Delta, x^{2}, A_{0}, \\times \\pm \\degree, \\it{...} \\bf{...}'}>
         <TextField value={axis.title} onCommit={(v) => upd((a) => void (a.title = v))} placeholder="Axis title" multiline />
         <div style={{ display: "flex", gap: 6, alignItems: "center", marginTop: 4 }}>
           <CheckField label="Show" checked={axis.showTitle} onChange={(v) => upd((a) => void (a.showTitle = v))} />
           <SymbolPicker onPick={(s) => upd((a) => void (a.title = a.title + s))} />
-        </div>
-        <div className="hint">
-          Shift+Enter starts a second line. Markup: \alpha \mu \Delta, x^{"{2}"}, A_{"{0}"}, \times \pm \degree, \it{"{...}"} \bf{"{...}"}
         </div>
       </Group>
       <Group title="Scale">
@@ -495,14 +559,12 @@ function AxisInspector({ graph, layer, which }: { graph: Graph; layer: Layer; wh
             </button>
           </Row>
         ) : (
-          <Row label="Tick count">
+          <Row label="Tick count" title="Major ticks spread evenly over the range, with one at each end">
             <NumberField value={axis.majorCount ?? 5} step={1} min={2} max={50} disabled={isLogScale(axis.scale)} onCommit={(v) => upd((a) => void (a.majorCount = Math.max(2, Math.round(v))))} style={{ width: 60 }} />
-            <span className="hint">evenly over the range, ends included</span>
           </Row>
         )}
-        <Row label="Minor ticks">
-          <NumberField value={axis.minorCount} step={1} min={0} max={20} disabled={linked} onCommit={(v) => upd((a) => void (a.minorCount = Math.round(v)))} />
-          <span className="hint">{isLogScale(axis.scale) ? (axis.scale === "log" ? "between decades (0 = none, 8 = 2…9)" : "between powers (0 = none)") : "between majors"}</span>
+        <Row label="Minor ticks" title={isLogScale(axis.scale) ? (axis.scale === "log" ? "Minor ticks between decades (0 = none, 8 = at 2…9)" : "Minor ticks between powers (0 = none)") : "Number of minor ticks between two major ticks"}>
+          <NumberField value={axis.minorCount} step={1} min={0} max={20} onCommit={(v) => upd((a) => void (a.minorCount = Math.round(v)))} />
         </Row>
         {which !== "z" && which !== "y2" && (
           <Row label="Crosses at" title={`Draw this axis across the data area at this ${which === "x" ? "Y" : "X"} value instead of on the frame edge`}>
@@ -513,7 +575,7 @@ function AxisInspector({ graph, layer, which }: { graph: Graph; layer: Layer; wh
           </Row>
         )}
       </Group>
-      <Group title="Tick labels">
+      <Group title="Tick labels" tab="labels">
         <Row label="Number format">
           <SelectField<NumberFormat>
             value={axis.numberFormat}
@@ -558,7 +620,7 @@ function AxisInspector({ graph, layer, which }: { graph: Graph; layer: Layer; wh
           />
         </Row>
         {!!axis.customTicks?.length && (
-          <Row label="">
+          <Row label="" title="In addition: the ticks of your own join the regular ticks. Only these: no regular or minor ticks are drawn.">
             <Segmented
               value={axis.customTicksMode ?? "add"}
               options={[
@@ -567,15 +629,14 @@ function AxisInspector({ graph, layer, which }: { graph: Graph; layer: Layer; wh
               ]}
               onChange={(v) => upd((a) => void (a.customTicksMode = v))}
             />
-            <span className="hint">{(axis.customTicksMode ?? "add") === "add" ? "to the regular ticks" : "no regular or minor ticks"}</span>
           </Row>
         )}
       </Group>
       <BreaksEditor axis={axis} eff={eff} upd={upd} />
-      <Group title="Style">
+      <Group title="Line and ticks" tab="style">
         {which !== "x" && (
-          <Row label="">
-            <CheckField label="Same style as X axis" checked={axis.sameAsX} onChange={(v) => upd((a) => void (a.sameAsX = v))} />
+          <Row label="" title="This axis takes its look from the X axis: tick direction and length, line width and color, title gap and the two fonts. Range, ticks, labels, mirror and grid stay its own.">
+            <CheckField label="Same style as X axis" checked={axis.sameAsX} onChange={setSameAsX} />
           </Row>
         )}
         <div style={{ opacity: linked ? 0.5 : 1, pointerEvents: linked ? "none" : undefined }}>
@@ -594,17 +655,21 @@ function AxisInspector({ graph, layer, which }: { graph: Graph; layer: Layer; wh
             <NumberField value={styleSrc.titleGapMm} step={0.5} min={0} onCommit={(v) => upd((a) => void (a.titleGapMm = v))} style={{ width: 60 }} />
             <span className="hint">mm</span>
           </Row>
-          <Row label="">
-            <CheckField label="Mirror (box frame)" checked={styleSrc.mirror} onChange={(v) => upd((a) => void (a.mirror = v))} />
-            <CheckField label="Grid" checked={styleSrc.grid} onChange={(v) => upd((a) => void (a.grid = v))} />
-          </Row>
+        </div>
+        <Row label="">
+          <CheckField label="Mirror (box frame)" checked={axis.mirror} onChange={(v) => upd((a) => void (a.mirror = v))} />
+          <CheckField label="Grid" checked={axis.grid} onChange={(v) => upd((a) => void (a.grid = v))} />
+        </Row>
+      </Group>
+      <Group title="Fonts" tab="style" info={linked ? "This axis uses the style of the X axis (Line and ticks ▸ Same style as X axis)." : undefined}>
+        <div style={{ opacity: linked ? 0.5 : 1, pointerEvents: linked ? "none" : undefined }}>
           <div className="group-title">Title font</div>
           <FontFields style={styleSrc.titleStyle} onChange={(p) => upd((a) => void Object.assign(a.titleStyle, p))} />
           <div className="group-title">Tick label font</div>
           <FontFields style={styleSrc.tickLabelStyle} onChange={(p) => upd((a) => void Object.assign(a.tickLabelStyle, p))} />
         </div>
       </Group>
-      <Group>
+      <Group tab="*">
         <CheckField label="Axis visible" checked={axis.visible} onChange={(v) => upd((a) => void (a.visible = v))} />
       </Group>
     </InspectorPanel>
@@ -627,6 +692,13 @@ function SymbolPicker({ onPick }: { onPick: (s: string) => void }) {
 }
 
 // ---------------------------------------------------------------- plot
+
+/** The plot inspector in three parts: how the plot looks, what it shows, and its texts. */
+const PLOT_TABS = [
+  { id: "style", label: "Style" },
+  { id: "data", label: "Data" },
+  { id: "labels", label: "Labels" },
+];
 
 function PlotInspector({ graph, layer, plot }: { graph: Graph; layer: Layer; plot: Plot }) {
   const st = useStore;
@@ -664,10 +736,23 @@ function PlotInspector({ graph, layer, plot }: { graph: Graph; layer: Layer; plo
   const is3dScatter = plot.type === "scatter3d";
   const isFunc = plot.type === "function";
   const xyLike = !isHist && !isFit && !isMatrix && !isBar && !isBox && !is3dScatter && !isFunc;
+  // a curve group: selected as a whole (its name in the list, "Select all"), or this one curve of it
+  const group = groupOf(graph, plot);
+  const members = group ? groupMembers(graph, group.id) : [];
+  const picked = new Set([plot.id, ...others.map((x) => x.plotId)]);
+  const wholeGroup = !!group && members.length > 1 && members.every((m) => picked.has(m.plot.id));
+  const groupSection = group ? <PlotGroupSection graph={graph} layer={layer} plot={plot} group={group} whole={wholeGroup} /> : null;
   return (
-    <InspectorPanel kind="plot" defaultOpen="Plot">
-      <Head icon="chart" title={plot.name || "Plot"} />
+    <InspectorPanel kind={wholeGroup ? "plotGroup" : "plot"} defaultOpen={wholeGroup ? "Group" : "Plot"} tabs={PLOT_TABS}>
+      <Head icon="chart" title={wholeGroup ? `${group!.name} · ${members.length} curves` : plot.name || "Plot"} />
       <Breadcrumb graph={graph} layer={layer} />
+      <PanelTabs />
+      {wholeGroup && (
+        <div className="note group-note" title="The whole group is selected. Click one curve to change it alone.">
+          Changes apply to all {members.length} curves.
+        </div>
+      )}
+      {wholeGroup && groupSection}
       <Group title="Plot">
         <MultiHint n={others.length} what="plots" />
         <Row label="Name">
@@ -693,8 +778,15 @@ function PlotInspector({ graph, layer, plot }: { graph: Graph; layer: Layer; plo
           </Row>
         )}
         {!isMatrix && !(is3dScatter && plot.colormap) && (
-          <Row label="Color">
-            <ColorField value={plot.color} onChange={(v) => upd((p) => void (p.color = v))} />
+          <Row label="Color" title={group?.colors ? "The group gives its curves their colors. Choose \"Each curve its own\" in the Group section to set them one by one." : undefined}>
+            {group?.colors ? (
+              <>
+                <span className="swatch" style={{ background: plot.color }} />
+                <span className="hint">from the group “{group.name}”</span>
+              </>
+            ) : (
+              <ColorField value={plot.color} onChange={(v) => upd((p) => void (p.color = v))} />
+            )}
           </Row>
         )}
         {layer.axes.y2 && !layer.view3d && (
@@ -703,16 +795,29 @@ function PlotInspector({ graph, layer, plot }: { graph: Graph; layer: Layer; plo
           </Row>
         )}
         <Row label="">
-          <CheckField label="Visible" checked={plot.visible} onChange={(v) => upd((p) => void (p.visible = v))} />
+          <CheckField
+            label="Visible"
+            checked={plot.visible}
+            onChange={(v) =>
+              // with the fit curves made from each plot (they keep their own tick)
+              st.getState().updateGraph(graph.id, (g) => {
+                for (const ref of [{ layerId: layer.id, plotId: plot.id }, ...others]) {
+                  const l = g.layers.find((x) => x.id === ref.layerId);
+                  const pl = l?.plots.find((x) => x.id === ref.plotId);
+                  if (l && pl) setPlotShown(l, pl, v);
+                }
+              })
+            }
+          />
         </Row>
-        <Row label="Apply style" title="Give the other plots this plot's symbols, line, error-bar, label and bar settings (not their data or names)">
+        <Row wrap label="Apply style" title="Give the other plots this plot's symbols, line, error-bar, label and bar settings (not their data or names)">
           <button className="btn small" disabled={layer.plots.length < 2} onClick={() => applyStyle("layer")}>
             To layer
           </button>
           <button className="btn small" disabled={graph.layers.reduce((n, l) => n + l.plots.length, 0) < 2} onClick={() => applyStyle("graph")}>
             To graph
           </button>
-          <CheckField label="with colour" checked={styleWithColor} onChange={setStyleWithColor} />
+          <CheckField label="with color" checked={styleWithColor} onChange={setStyleWithColor} />
         </Row>
         <Row label="">
           <button className="btn small" title="Copy this plot's style; paste it on another plot from its right-click menu or here" onClick={() => copyPlotStyle(plot, true)}>
@@ -723,8 +828,9 @@ function PlotInspector({ graph, layer, plot }: { graph: Graph; layer: Layer; plo
           </button>
         </Row>
       </Group>
+      {!wholeGroup && groupSection}
       {isFunc && plot.func && (
-        <Group title="Function">
+        <Group title="Function" tab="data" info="Without a fixed range the curve follows the x axis, so zooming or rescaling re-samples it.">
           <Row label="y =">
             <TextField value={plot.func.expression} mono onCommit={(v) => upd((p) => void (p.func && (p.func.expression = v)))} />
           </Row>
@@ -751,10 +857,9 @@ function PlotInspector({ graph, layer, plot }: { graph: Graph; layer: Layer; plo
           <Row label="Points">
             <NumberField value={plot.func.points} step={100} min={10} max={5000} onCommit={(v) => upd((p) => void (p.func && (p.func.points = Math.round(v))))} style={{ width: 80 }} />
           </Row>
-          <div className="hint">Without a fixed range the curve follows the x axis, so zooming or rescaling re-samples it.</div>
         </Group>
       )}
-      {isMatrix && <MatrixSourceFields plot={plot} upd={upd} />}
+      <InTab tab="data">{isMatrix && <MatrixSourceFields plot={plot} upd={upd} />}</InTab>
       {(isMatrix || is3dScatter) && <ColormapFields plot={plot} upd={upd} />}
       {plot.type === "contour" && <ContourFields plot={plot} upd={upd} />}
       {plot.type === "surface3d" && <SurfaceFields plot={plot} upd={upd} />}
@@ -783,12 +888,12 @@ function PlotInspector({ graph, layer, plot }: { graph: Graph; layer: Layer; plo
               onChange={(v) => upd((p) => void (p.marker.shape = v))}
             />
           </Row>
-          <Row label="Fill colour">
-            <CheckField label="Plot colour" checked={!plot.marker.fillColor} onChange={(v) => upd((p) => void (p.marker.fillColor = v ? null : p.color))} />
+          <Row label="Fill color">
+            <CheckField label="Plot color" checked={!plot.marker.fillColor} onChange={(v) => upd((p) => void (p.marker.fillColor = v ? null : p.color))} />
             {plot.marker.fillColor && <ColorField value={plot.marker.fillColor} onChange={(v) => upd((p) => void (p.marker.fillColor = v))} />}
           </Row>
           <Row label="Edge">
-            <CheckField label="Plot colour" checked={!plot.marker.edgeColor} onChange={(v) => upd((p) => void (p.marker.edgeColor = v ? null : "#000000"))} />
+            <CheckField label="Plot color" checked={!plot.marker.edgeColor} onChange={(v) => upd((p) => void (p.marker.edgeColor = v ? null : "#000000"))} />
             {plot.marker.edgeColor && <ColorField value={plot.marker.edgeColor} onChange={(v) => upd((p) => void (p.marker.edgeColor = v))} />}
             <NumberField value={plot.marker.edgeWidthPt ?? null} placeholder="auto" step={0.25} min={0} onCommit={(v) => upd((p) => void (p.marker.edgeWidthPt = v > 0 ? v : null))} style={{ width: 50 }} />
             <span className="hint">pt</span>
@@ -812,11 +917,16 @@ function PlotInspector({ graph, layer, plot }: { graph: Graph; layer: Layer; plo
           </Row>
         )}
         {is3dScatter && (
-          <Row label="">
-            <CheckField label="Drop lines to the floor" checked={plot.showLine} onChange={(v) => upd((p) => void (p.showLine = v))} />
-          </Row>
+          <>
+            <Row label="" title="Connect each point to the next one in the sheet, e.g. to draw a trajectory">
+              <CheckField label="Join points with a line" checked={!!plot.joinPoints} onChange={(v) => upd((p) => void (p.joinPoints = v || undefined))} />
+            </Row>
+            <Row label="">
+              <CheckField label="Drop lines to the floor" checked={plot.showLine} onChange={(v) => upd((p) => void (p.showLine = v))} />
+            </Row>
+          </>
         )}
-        {(!(isFunc || is3dScatter) || plot.showLine) && (
+        {(!(isFunc || is3dScatter) || plot.showLine || (is3dScatter && plot.joinPoints)) && (
         <>
         <Row label="Width (pt)">
           <NumberField value={plot.line.widthPt} step={0.25} min={0} onCommit={(v) => upd((p) => void (p.line.widthPt = v))} style={{ width: 60 }} />
@@ -865,12 +975,50 @@ function PlotInspector({ graph, layer, plot }: { graph: Graph; layer: Layer; plo
             />
           </Row>
         )}
+        {is3dScatter && plot.joinPoints && (
+          <Row label="Connect" title="How the joining line runs between points (drop lines stay straight)">
+            <SelectField<LineConnect>
+              value={plot.line.connect === "spline" || plot.line.connect === "bspline" ? plot.line.connect : "straight"}
+              options={[
+                { value: "straight", label: "Straight segments" },
+                { value: "spline", label: "Smooth (through points)" },
+                { value: "bspline", label: "B-spline (smoothed)" },
+              ]}
+              onChange={(v) => upd((p) => void (p.line.connect = v))}
+            />
+          </Row>
+        )}
+        {(xyLike || (is3dScatter && plot.joinPoints)) && plot.line.connect === "spline" && (
+          <Row label="Smoothing" title="How far the line bends between points: 0 % gives straight segments, 100 % the full smooth curve">
+            <input
+              type="range"
+              min={0}
+              max={100}
+              step={5}
+              value={Math.round((plot.line.smoothing ?? 1) * 100)}
+              onChange={(e) => {
+                const v = Number(e.target.value) / 100;
+                upd((p) => void (p.line.smoothing = v >= 1 ? undefined : v));
+              }}
+              style={{ width: 90 }}
+            />
+            <NumberField
+              value={Math.round((plot.line.smoothing ?? 1) * 100)}
+              step={5}
+              min={0}
+              max={100}
+              onCommit={(v) => upd((p) => void (p.line.smoothing = v >= 100 ? undefined : Math.max(0, v) / 100))}
+              style={{ width: 52 }}
+            />
+            <span className="hint">%</span>
+          </Row>
+        )}
         </>
         )}
       </Group>
       )}
       {(xyLike || isBar) && (
-        <Group title={isBar ? "Value labels" : "Data labels"} id="Data labels">
+        <Group title={isBar ? "Value labels" : "Data labels"} id="Data labels" tab="labels">
           <Row label="">
             <CheckField label={isBar ? "Write the value on every bar" : "Label every point"} checked={!!plot.labels?.show} onChange={(v) => upd((p) => void (p.labels = { ...(p.labels ?? { source: "y", colId: null, decimals: 2, position: "above", offsetMm: 1.2, sizePt: 7 }), show: v }))} />
           </Row>
@@ -925,10 +1073,10 @@ function PlotInspector({ graph, layer, plot }: { graph: Graph; layer: Layer; plo
         </Group>
       )}
       {xyLike && (
-        <Group title="Colour by column">
+        <Group title="Color by column" tab="data" info="Colors every symbol by the value of a column. The layer's color scale shows the mapping (Layer ▸ Axes ▸ Color scale).">
           <Row label="">
             <CheckField
-              label="Colour the symbols by a column"
+              label="Color the symbols by a column"
               checked={!!plot.colorBy}
               onChange={(v) =>
                 upd((p) => {
@@ -945,12 +1093,11 @@ function PlotInspector({ graph, layer, plot }: { graph: Graph; layer: Layer; plo
               <SelectField value={plot.colorBy.colId ?? ""} options={[{ value: "", label: "—" }, ...sheet.columns.map((c, i) => ({ value: c.id, label: c.longName || String.fromCharCode(65 + i) }))]} onChange={(v) => upd((p) => void (p.colorBy!.colId = v || null))} />
             </Row>
           )}
-          {plot.colorBy && <div className="hint">Add a colour scale to the layer (Layer → Colour scale) to show the mapping.</div>}
         </Group>
       )}
-      {plot.colorBy && <ColormapFields plot={plot} upd={upd} />}
+      <InTab tab="data">{plot.colorBy && <ColormapFields plot={plot} upd={upd} />}</InTab>
       {(xyLike || isBar) && (
-        <Group title="Error bars">
+        <Group title="Error bars" info="A band spans y − error … y + error (Y errors only; X errors are still drawn as bars).">
           <Row label="">
             <CheckField label="Show errors" checked={plot.errorBars.show} onChange={(v) => upd((p) => void (p.errorBars.show = v))} />
           </Row>
@@ -1006,22 +1153,36 @@ function PlotInspector({ graph, layer, plot }: { graph: Graph; layer: Layer; plo
                   </>
                 )}
               </Row>
-              <div className="hint">The band spans y − error … y + error (Y errors only; X errors are still drawn as bars).</div>
             </>
           )}
           </>
           )}
         </Group>
       )}
-      {isHist && <HistogramFields plot={plot} upd={upd} />}
-      {isFit && plot.fit && <FitSummary plot={plot} graph={graph} layer={layer} />}
-      <Group title="Source">
+      <InTab tab="data">
+        {isHist && <HistogramFields plot={plot} upd={upd} />}
+        {isFit && plot.fit && <FitSummary plot={plot} graph={graph} layer={layer} />}
+      </InTab>
+      <Group title="Legend" tab="labels">
+        <Row label="Name" title="The text of this plot's entry in the legend">
+          <TextField value={plot.name} onCommit={(v) => st.getState().updatePlot(graph.id, layer.id, plot.id, (p) => void (p.name = v))} />
+        </Row>
+        <Row label="" title={layer.legend.showActive ? "The legend of this layer lists every plot that is shown (Legend ▸ Show active plots)" : "List this plot in the legend of its layer"}>
+          <CheckField label="In the legend" checked={layer.legend.showActive ? plot.visible : plot.showInLegend !== false} disabled={!!layer.legend.showActive} onChange={(v) => upd((p) => void (p.showInLegend = v))} />
+        </Row>
+        <Row label="">
+          <button className="btn small" onClick={() => st.getState().setSelection({ kind: "legend", graphId: graph.id, layerId: layer.id })}>
+            Legend settings…
+          </button>
+        </Row>
+      </Group>
+      <Group title="Source" tab="data">
         {isFit ? (
-          <div className="hint">Fitted from: {sheet?.name ?? "(missing)"} · {colName(plot.source.yColId)}</div>
+          <div className="note">Fitted from: {sheet?.name ?? "(missing)"} · {colName(plot.source.yColId)}</div>
         ) : isMatrix ? (
-          <div className="hint">See "Matrix data" above.</div>
+          <div className="note">See "Matrix data".</div>
         ) : isFunc ? (
-          <div className="hint">Computed from the expression above; no sheet data.</div>
+          <div className="note">Computed from the expression; no sheet data.</div>
         ) : (
           <PlotSourceFields source={plot.source} type={plot.type} onChange={(s) => upd((p) => void (p.source = s))} />
         )}
@@ -1049,8 +1210,34 @@ function HistogramFields({ plot, upd }: { plot: Plot; upd: (fn: (p: Plot) => voi
       if (!p.histogram) p.histogram = defaultHistogramOptions();
       fn(p.histogram);
     });
+  const showAs = (
+    <Row label="Show as" title="Bars count the values in each bin. Cumulative draws the fraction of values up to each x as a step curve (the CDF).">
+      <Segmented
+        value={h.display ?? "bars"}
+        options={[{ value: "bars", label: "Bars" }, { value: "cdf", label: "Cumulative" }]}
+        onChange={(v) =>
+          u((o) => {
+            o.display = v === "cdf" ? "cdf" : undefined;
+            // a cumulative curve reads best as a fraction from 0 to 1
+            if (v === "cdf" && o.normalization === "count") o.normalization = "probability";
+          })
+        }
+      />
+    </Row>
+  );
+  if (h.display === "cdf") {
+    return (
+      <Group id="bins" title="Distribution" info="The curve steps up at every value of the column, so no bins are needed. Line width and style are in the Line section.">
+        {showAs}
+        <Row label="Scale">
+          <Segmented value={h.normalization === "count" ? "count" : "probability"} options={[{ value: "probability", label: "Fraction" }, { value: "count", label: "Count" }]} onChange={(v) => u((o) => void (o.normalization = v))} />
+        </Row>
+      </Group>
+    );
+  }
   return (
-    <Group title="Bins">
+    <Group id="bins" title="Bins">
+      {showAs}
       <Row label="Bin by">
         <Segmented value={h.binMode} options={[{ value: "count", label: "Count" }, { value: "width", label: "Width" }]} onChange={(v) => u((o) => void (o.binMode = v))} />
       </Row>
@@ -1160,6 +1347,9 @@ function LegendInspector({ graph, layer }: { graph: Graph; layer: Layer }) {
         if (l) fn(l);
       }
     });
+  const entries = legendOrder(layer.plots);
+  const customOrder = hasLegendOrder(layer);
+  const moveEntry = (plotId: string, delta: 1 | -1) => st.getState().updateLayer(graph.id, layer.id, (l) => moveLegendEntry(l, plotId, delta));
   return (
     <InspectorPanel kind="legend" defaultOpen="Legend">
       <Head icon="legend" title="Legend" />
@@ -1188,14 +1378,38 @@ function LegendInspector({ graph, layer }: { graph: Graph; layer: Layer }) {
         </Row>
         <FontFields style={lg.style} onChange={(p) => upd((l) => void Object.assign(l.legend.style, p))} />
       </Group>
-      <Group title="Entries">
-        {layer.plots.map((p) => (
-          <Row key={p.id} label={<span className="swatch" style={{ background: p.color, display: "inline-block", verticalAlign: -2 }} />}>
-            <CheckField label="" checked={p.showInLegend !== false} onChange={(v) => st.getState().updatePlot(graph.id, layer.id, p.id, (pl) => void (pl.showInLegend = v))} />
+      <Group title="Entries" info={'Untick an entry to leave it out of the legend, or tick "Show active plots" to list every plot that is shown on the graph: hiding a plot then removes its entry and showing it brings the entry back. Drag an entry, or use its arrows, to move it up or down in the legend without changing which plot is drawn on top. Double-click an entry on the graph to rename it in place.'}>
+        <Row label="">
+          <CheckField label="Show active plots" checked={!!lg.showActive} onChange={(v) => upd((l) => void (l.legend.showActive = v || undefined))} />
+        </Row>
+        {entries.map((p, i) => (
+          <div key={p.id} className="reorder-row" {...reorderRow(`legend:${layer.id}`, p.id, (_from, to) => st.getState().updateLayer(graph.id, layer.id, (l) => placeLegendEntry(l, p.id, to)))}>
+          <Row
+            label={
+              <span className="reorder-grip" title="Drag to move this entry up or down in the legend">
+                <Icon name="grip" size={11} />
+                <span className="swatch" style={{ background: p.color, opacity: p.visible ? 1 : 0.35 }} />
+              </span>
+            }
+          >
+            <CheckField label="" checked={lg.showActive ? p.visible : p.showInLegend !== false} disabled={!!lg.showActive} onChange={(v) => st.getState().updatePlot(graph.id, layer.id, p.id, (pl) => void (pl.showInLegend = v))} />
             <TextField value={p.name} onCommit={(v) => st.getState().updatePlot(graph.id, layer.id, p.id, (pl) => void (pl.name = v))} />
+            <button className="icon-btn tiny" title="Later in the legend (the drawing order stays)" disabled={i === entries.length - 1} onClick={() => moveEntry(p.id, 1)}>
+              <Icon name="chevron" size={11} style={{ transform: "rotate(90deg)" }} />
+            </button>
+            <button className="icon-btn tiny" title="Earlier in the legend (the drawing order stays)" disabled={i === 0} onClick={() => moveEntry(p.id, -1)}>
+              <Icon name="chevron" size={11} style={{ transform: "rotate(-90deg)" }} />
+            </button>
           </Row>
+          </div>
         ))}
-        <div className="hint">Untick an entry to leave it out of the legend. Double-click an entry on the graph to rename it in place.</div>
+        {customOrder && (
+          <Row label="" title="List the entries in the order the plots are drawn again">
+            <button className="btn small" onClick={() => st.getState().updateLayer(graph.id, layer.id, resetLegendOrder)}>
+              Same order as the plots
+            </button>
+          </Row>
+        )}
       </Group>
     </InspectorPanel>
   );
@@ -1217,9 +1431,11 @@ function ShapeInspector({ graph, layer, shape }: { graph: Graph; layer: Layer; s
           }
         })
       : st.getState().updateShape(graph.id, layer.id, shape.id, fn);
-  const isLine = shape.kind === "line" || shape.kind === "arrow";
+  const isBracket = shape.kind === "bracket";
+  const isLine = shape.kind === "line" || shape.kind === "arrow" || isBracket;
   const isImage = shape.kind === "image";
-  const title = { line: "Line", arrow: "Arrow", rect: "Rectangle", ellipse: "Ellipse", image: "Image", polyline: "Polyline", polygon: "Polygon", freehand: "Free-form line" }[shape.kind];
+  const title = { line: "Line", arrow: "Arrow", rect: "Rectangle", ellipse: "Ellipse", image: "Image", polyline: "Polyline", polygon: "Polygon", freehand: "Free-form line", bracket: "Bracket" }[shape.kind];
+  const labelStyle: TextStyle = shape.labelStyle ?? { font: "Arial", sizePt: 8, bold: false, italic: false, color: "#000000" };
   const isPoints = !!shape.points;
   const mode: CoordMode = shape.coord ?? "mm";
   const unit = mode === "mm" ? "mm" : "axis units";
@@ -1281,7 +1497,7 @@ function ShapeInspector({ graph, layer, shape }: { graph: Graph; layer: Layer; s
     });
   const setSizeMm = (w: number, h: number) =>
     upd((s) => {
-      // keep the top-left corner, resize towards the bottom-right
+      // keep the top-left corner, resize toward the bottom-right
       const x0 = Math.min(mmBounds.x1, mmBounds.x2);
       const y0 = Math.min(mmBounds.y1, mmBounds.y2);
       const a = s.coord === "data" ? ll.toData(x0, y0) : { x: x0, y: y0 };
@@ -1293,7 +1509,30 @@ function ShapeInspector({ graph, layer, shape }: { graph: Graph; layer: Layer; s
       <Head icon={isImage ? "image" : "shapes"} title={title} />
       <Breadcrumb graph={graph} layer={layer} />
       <MultiHint n={sameKind.length} what={`${title.toLowerCase()}s`} />
-      <Group id="bounds" title={isLine ? `End points (${unit})` : `Bounds (${unit})`}>
+      {isBracket && (
+        <Group>
+          <Row label="Label">
+            <TextField value={shape.label ?? ""} onCommit={(v) => upd((s) => void (s.label = v))} />
+          </Row>
+          <Row wrap label="">
+            {["ns", "*", "**", "***", "****"].map((t) => (
+              <button key={t} className={"btn small" + (shape.label === t ? " primary" : "")} title={t === "ns" ? "Not significant" : `p ≤ ${["0.05", "0.01", "0.001", "0.0001"][t.length - 1]}`} onClick={() => upd((s) => void (s.label = t))}>
+                {t}
+              </button>
+            ))}
+          </Row>
+          <Row label="Tick length" title="Length of the short lines at the two ends">
+            <NumberField value={shape.headSizeMm} step={0.2} min={0} onCommit={(v) => upd((s) => void (s.headSizeMm = v))} style={{ width: 60 }} />
+            <span className="hint">mm</span>
+          </Row>
+          <FontFields style={labelStyle} onChange={(p) => upd((s) => void (s.labelStyle = { ...(s.labelStyle ?? labelStyle), ...p }))} />
+        </Group>
+      )}
+      <Group
+        id="bounds"
+        title={isLine ? `End points (${unit})` : `Bounds (${unit})`}
+        info={(mode === "data" ? "Attached to the axes: the shape follows the data when the axis range changes. " : "") + (isImage ? "Drag the picture to move it; drag a corner handle to resize (hold " + ALT_KEY + " to ignore the proportions)." : isBracket ? "Drag the bracket to move it; drag an end to make it longer or shorter." : "Drag the shape to move it; drag its handles to reshape. Hold Shift while drawing for a straight line or a square/circle.")}
+      >
         <CoordModeField
           graph={graph}
           layer={layer}
@@ -1313,9 +1552,7 @@ function ShapeInspector({ graph, layer, shape }: { graph: Graph; layer: Layer; s
           }
         />
         {isPoints && (
-          <div className="hint">
-            {shape.points!.length} points · drag a vertex to reshape, or the whole shape to move it.
-          </div>
+          <div className="note">{shape.points!.length} points</div>
         )}
         {!isPoints && (
         <>
@@ -1364,15 +1601,11 @@ function ShapeInspector({ graph, layer, shape }: { graph: Graph; layer: Layer; s
         )}
         {shape.kind === "rect" && (
           <Row label="Rounded corners" title="Radius of the corners; 0 gives square corners">
-            <input type="range" min={0} max={20} step={0.5} value={shape.cornerRadiusMm ?? 0} onChange={(e) => upd((s) => void (s.cornerRadiusMm = Number(e.target.value) > 0 ? Number(e.target.value) : undefined))} style={{ width: 90 }} />
+            <input type="range" min={0} max={20} step={0.5} value={shape.cornerRadiusMm ?? 0} onChange={(e) => upd((s) => void (s.cornerRadiusMm = Number(e.target.value) > 0 ? Number(e.target.value) : undefined))} style={{ flex: 1, minWidth: 30 }} />
             <NumberField value={shape.cornerRadiusMm ?? 0} step={0.5} min={0} onCommit={(v) => upd((s) => void (s.cornerRadiusMm = v > 0 ? v : undefined))} style={{ width: 52 }} />
             <span className="hint">mm</span>
           </Row>
         )}
-        <div className="hint">
-          {mode === "data" ? "Attached to the axes: the shape follows the data when the axis range changes. " : ""}
-          {isImage ? "Drag the picture to move it; drag a corner handle to resize (hold ⌥ to ignore the proportions)." : "Drag the shape to move it; drag its handles to reshape. Hold Shift while drawing for a straight line or a square/circle."}
-        </div>
       </Group>
       {isImage && (
         <Group title="Picture">
@@ -1418,7 +1651,7 @@ function ShapeInspector({ graph, layer, shape }: { graph: Graph; layer: Layer; s
             </button>
           </Row>
           {shape.naturalW && shape.naturalH ? (
-            <div className="hint">
+            <div className="note">
               {shape.naturalW} × {shape.naturalH} px · {Math.round(((shape.naturalW * (shape.crop?.w ?? 1)) / wMm) * 25.4)} dpi at this size
             </div>
           ) : null}
@@ -1482,13 +1715,31 @@ function ShapeInspector({ graph, layer, shape }: { graph: Graph; layer: Layer; s
           </Row>
         )}
       </Group>
-      {isImage || shape.kind === "polyline" || shape.kind === "freehand" ? null : isLine ? (
-        <Group title="Arrow heads">
-          <Row label="">
-            <CheckField label="At start" checked={shape.headStart} onChange={(v) => upd((s) => void (s.headStart = v))} />
-            <CheckField label="At end" checked={shape.headEnd} onChange={(v) => upd((s) => void (s.headEnd = v))} />
-          </Row>
-          <Row label="Head size">
+      {isImage || isBracket ? null : isLine || shape.kind === "polyline" || shape.kind === "freehand" ? (
+        <Group title="Ends" info="What is drawn at the start and at the end of the line: an arrow head, a symbol centered on the end point, or a bar across it.">
+          {(["start", "end"] as const).map((which) => (
+            <Row key={which} label={which === "start" ? "Start" : "End"}>
+              <SelectField<LineEnd | "none">
+                value={lineEndOf(shape, which) ?? "none"}
+                options={[
+                  { value: "none", label: "None" },
+                  { value: "arrow", label: "Arrow" },
+                  { value: "circle", label: "Circle" },
+                  { value: "square", label: "Square" },
+                  { value: "diamond", label: "Diamond" },
+                  { value: "bar", label: "Bar" },
+                ]}
+                onChange={(v) =>
+                  upd((s) => {
+                    if (which === "start") s.headStart = v !== "none";
+                    else s.headEnd = v !== "none";
+                    if (v !== "none") s[which === "start" ? "headStartShape" : "headEndShape"] = v;
+                  })
+                }
+              />
+            </Row>
+          ))}
+          <Row label="Size">
             <NumberField value={shape.headSizeMm} step={0.5} min={0.5} onCommit={(v) => upd((s) => void (s.headSizeMm = v))} style={{ width: 60 }} />
             <span className="hint">mm</span>
           </Row>

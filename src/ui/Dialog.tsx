@@ -1,5 +1,6 @@
 import { useEffect, type ReactNode } from "react";
 import { createPortal } from "react-dom";
+import { Info } from "./Tooltip";
 
 export function Dialog({
   title,
@@ -7,7 +8,10 @@ export function Dialog({
   actions,
   onClose,
   width,
+  info,
 }: {
+  /** an explanation of the whole dialog, shown when the pointer rests on the "i" next to the title */
+  info?: string;
   title: string;
   children: ReactNode;
   actions?: ReactNode;
@@ -27,7 +31,10 @@ export function Dialog({
   return createPortal(
     <div className="modal-backdrop" onMouseDown={(e) => e.target === e.currentTarget && onClose()}>
       <div className="modal" style={width ? { width } : undefined} role="dialog" aria-label={title}>
-        <div className="modal-title">{title}</div>
+        <div className="modal-title">
+          <span>{title}</span>
+          {info && <Info text={info} />}
+        </div>
         <div className="modal-body">{children}</div>
         {actions && <div className="modal-actions">{actions}</div>}
       </div>

@@ -31,6 +31,7 @@ export function AboutDialog({ page }: { page: "about" | "notes" }) {
   return (
     <Dialog
       title="About PlotFolio"
+      info={tab === "notes" ? "Give this text to an AI assistant together with the source code before asking for changes. It is also the file AI_NOTES.md at the root of the repository." : undefined}
       onClose={close}
       width={tab === "notes" ? 760 : 520}
       actions={
@@ -70,8 +71,8 @@ export function AboutDialog({ page }: { page: "about" | "notes" }) {
               </div>
             </div>
           </div>
-          <p className="hint" style={{ margin: "0 0 8px" }}>
-            Sheet-based plotting, curve fitting and publication-quality figure export for macOS. Sizes are in mm, fonts and lines in pt; graphs export as SVG at their physical size or as PNG/JPEG at any resolution.
+          <p className="note" style={{ margin: "0 0 8px" }}>
+            Sheet-based plotting, curve fitting and publication-quality figure export, for Mac, Windows and the browser. Sizes are in mm, fonts and lines in pt; graphs export as SVG at their physical size or as PNG/JPEG at any resolution.
           </p>
           <table className="preview-table" style={{ width: "auto" }}>
             <tbody>
@@ -92,9 +93,6 @@ export function AboutDialog({ page }: { page: "about" | "notes" }) {
         </div>
       ) : (
         <>
-          <div className="hint" style={{ marginBottom: 6 }}>
-            Give this text to an AI assistant together with the source code before asking for changes. It is also the file AI_NOTES.md at the root of the repository.
-          </div>
           <div className="about-notes">{notes}</div>
         </>
       )}

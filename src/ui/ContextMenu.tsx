@@ -33,10 +33,64 @@ export function ContextMenu({ menu, onClose }: { menu: MenuState | null; onClose
   return createPortal(<MenuPanel x={menu.x} y={menu.y} items={menu.items} onClose={onClose} />, document.body);
 }
 
-export function MenuPanel({ x, y, items, onClose }: { x: number; y: number; items: MenuItem[]; onClose: () => void }) {
+/** Rows the arrow keys can stop on. */
+const selectable = (it: MenuItem) => it.type === "submenu" || ((it.type === undefined || it.type === "item") && !it.disabled);
+
+interface MenuPanelProps {
+  x: number;
+  y: number;
+  items: MenuItem[];
+  onClose: () => void;
+  /** the menus of the menu bar: ↑ ↓ move through the rows, Enter chooses, → opens a submenu and ← leaves it */
+  keyboard?: boolean;
+  /** with `keyboard`: start with the first row marked (the menu was opened from the keyboard) */
+  startActive?: boolean;
+  /** a submenu opened from the keyboard: ← gives the keys back to the menu it belongs to */
+  onBack?: () => void;
+}
+
+export function MenuPanel({ x, y, items, onClose, keyboard, startActive, onBack }: MenuPanelProps) {
   const ref = useRef<HTMLDivElement>(null);
   const [pos, setPos] = useState({ x, y });
-  const [sub, setSub] = useState<{ idx: number; x: number; y: number } | null>(null);
+  const [sub, setSub] = useState<{ idx: number; x: number; y: number; keys?: boolean } | null>(null);
+  const [active, setActive] = useState<number | null>(() => (keyboard && startActive ? Math.max(0, items.findIndex(selectable)) : null));
+  // the latest state for the key listener, which is installed once
+  const live = useRef({ items, active, sub, onClose, onBack });
+  live.current = { items, active, sub, onClose, onBack };
+  useEffect(() => {
+    if (!keyboard) return;
+    const onKey = (e: KeyboardEvent) => {
+      const { items, active, sub, onClose, onBack } = live.current;
+      if (sub?.keys) return; // the open submenu has the keys
+      const rows = items.map((it, i) => (selectable(it) ? i : -1)).filter((i) => i >= 0);
+      const openSub = (i: number) => {
+        const r = (ref.current?.children[i] as HTMLElement | undefined)?.getBoundingClientRect();
+        if (r) setSub({ idx: i, x: r.right + 2, y: r.top - 4, keys: true });
+      };
+      const at = active === null ? -1 : rows.indexOf(active);
+      const it = active === null ? undefined : items[active];
+      // (a submenu may hold no row to stop on, "No Recent Projects": ← still leaves it)
+      if (e.key === "ArrowLeft" && onBack) onBack();
+      else if (!rows.length) return;
+      else if (e.key === "ArrowDown") setActive(rows[(at + 1) % rows.length]);
+      else if (e.key === "ArrowUp") setActive(rows[(at <= 0 ? rows.length : at) - 1]);
+      else if (e.key === "Home") setActive(rows[0]);
+      else if (e.key === "End") setActive(rows[rows.length - 1]);
+      else if (e.key === "ArrowRight" && it?.type === "submenu") openSub(active!);
+      else if ((e.key === "Enter" || e.key === " ") && it) {
+        if (it.type === "submenu") openSub(active!);
+        else if (it.type === undefined || it.type === "item") {
+          onClose();
+          it.onSelect();
+        }
+      } else return; // ← → otherwise move along the menu bar; other keys are not the menu's
+      e.preventDefault();
+      e.stopPropagation();
+    };
+    // before anything in the page: while a menu is open these keys belong to it, not to the sheet or graph behind
+    window.addEventListener("keydown", onKey, true);
+    return () => window.removeEventListener("keydown", onKey, true);
+  }, [keyboard]);
   useLayoutEffect(() => {
     const el = ref.current;
     if (!el) return;
@@ -70,22 +124,26 @@ export function MenuPanel({ x, y, items, onClose }: { x: number; y: number; item
           return (
             <div
               key={i}
-              className="mi"
+              className={"mi" + (active === i ? " active" : "")}
               onMouseEnter={(e) => {
                 const r = (e.currentTarget as HTMLElement).getBoundingClientRect();
                 setSub({ idx: i, x: r.right + 2, y: r.top - 4 });
+                if (keyboard) setActive(i);
               }}
             >
               <span>{it.label}</span>
               <span className="sc">›</span>
-              {sub?.idx === i && <MenuPanel x={sub.x} y={sub.y} items={it.items} onClose={onClose} />}
+              {sub?.idx === i && <MenuPanel x={sub.x} y={sub.y} items={it.items} onClose={onClose} keyboard={keyboard} startActive={sub.keys} onBack={sub.keys ? () => setSub(null) : undefined} />}
             </div>
           );
         return (
           <div
             key={i}
-            className={"mi" + (it.disabled ? " disabled" : "") + (it.checked ? " checked" : "")}
-            onMouseEnter={() => setSub(null)}
+            className={"mi" + (it.disabled ? " disabled" : "") + (it.checked ? " checked" : "") + (active === i ? " active" : "")}
+            onMouseEnter={() => {
+              setSub(null);
+              if (keyboard && !it.disabled) setActive(i);
+            }}
             onClick={() => {
               if (it.disabled) return;
               onClose();

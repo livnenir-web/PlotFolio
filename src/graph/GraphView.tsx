@@ -1,9 +1,11 @@
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { flushSync } from "react-dom";
-import type { Graph, Layer, Selection, Shape, ShapeKind, TextItem } from "../model/types";
+import type { Graph, Layer, Plot, Selection, Shape, ShapeKind, TextItem } from "../model/types";
 import type { InteractiveProps } from "./render/GraphSvg";
-import { textItemBBox, type BBox } from "./layout";
-import { pauseHistory, resumeHistory, useStore } from "../model/store";
+import { legendEntryAt, textItemBBox, type BBox, type LayerLayout } from "./layout";
+import { oneUndoStep, pauseHistory, resumeHistory, useStore } from "../model/store";
+import { canExclude, isExcludedPlot, type ExcludeResult } from "../model/exclude";
+import { getPlotData, plotRowIndices } from "./data";
 import { uid, uniqueName } from "../model/defaults";
 import { layoutGraph } from "./layout";
 import { GraphSvg } from "./render/GraphSvg";
@@ -14,21 +16,94 @@ import { useContextMenu, type MenuItem } from "../ui/ContextMenu";
 import { useDialogs } from "../app/dialogs";
 import { exportGraphAs } from "../export/exportGraph";
 import { FitPanel } from "../fit/FitDialog";
-import { Group, Panel, Separator } from "react-resizable-panels";
+import { keyHint, keyHintSuffix, useShortcuts } from "../app/shortcuts";
+import { ALT_KEY, formatKeys, IS_MAC } from "../app/menuModel";
+import { animationFrame, frameSchedule, isAnimated } from "./animation";
+import { AnimationBar } from "./AnimationBar";
+import { shownFrame, stepFrame, toggleAnimationFromUi, usePlayback } from "./animationPlayback";
+import { Group, Panel, Separator, type PanelImperativeHandle } from "react-resizable-panels";
 import { confirmDialog } from "../ui/confirm";
 import { applyMarkupShortcut } from "../ui/markupKeys";
 import { fileToDataUrl, insertImageIntoGraph, pickImageFile } from "../io/images";
 import { importViaDialog } from "../io/importFiles";
 import { goToDataSheet } from "../sheet/SheetView";
-import { applyPlotStyle, copyPlotStyle, pastedPlotStyle, plotColumnIds } from "../model/figure";
+import { applyPlotStyle, copyPlotStyle, defaultLayer, pastedPlotStyle, plotColumnIds, renewPlotIds, setLayerShown, shownLayers } from "../model/figure";
+import { createGroup, groupMembers, groupOf, ungroup } from "../model/plotGroups";
+import { ANALYSIS_LABELS } from "../analysis/ops";
+import { GRAPH_OPS, opFits, startCompare, startCurveAnalysis, startStatistics } from "../analysis/start";
+import { dataCurves } from "../analysis/graphCurves";
+import { axisLock, snapDirection } from "./constrain";
+
+/** A data point of a symbol or line plot on the canvas: its panel and plot, its place among the plot's points, its values. */
+interface PointHit {
+  ll: LayerLayout;
+  plot: Plot;
+  i: number;
+  x: number;
+  y: number;
+  /** position on the canvas, mm */
+  px: number;
+  py: number;
+  d: number;
+}
+
+/**
+ * The data point nearest to a position on the canvas, within `tol` mm (2D symbol and line plots, and fitted curves
+ * when asked for). A point of the plot `prefer` wins over a nearer point of another plot.
+ */
+function pointNear(layers: LayerLayout[], mx: number, my: number, opts: { fits?: boolean; prefer?: string; tol?: number } = {}): PointHit | null {
+  const tol = opts.tol ?? 2.5;
+  let best: PointHit | null = null;
+  for (const ll of layers) {
+    if (ll.is3d) continue;
+    const f = ll.layer.frame;
+    if (mx < f.xMm - 2 || mx > f.xMm + f.wMm + 2 || my < f.yMm - 2 || my > f.yMm + f.hMm + 2) continue;
+    for (const p of ll.layer.plots) {
+      if (!p.visible || !(["scatter", "line", "lineScatter"].includes(p.type) || (opts.fits && p.type === "fitCurve"))) continue;
+      const d = ll.data.get(p.id);
+      if (!d) continue;
+      const ys = p.yAxis === "y2" && ll.y2 ? ll.y2.scale : ll.y.scale;
+      for (let i = 0; i < d.x.length; i++) {
+        const px = ll.x.scale.map(d.x[i]);
+        const py = ys.map(d.y[i]);
+        if (px === null || py === null) continue;
+        const dist = Math.hypot(px - mx, py - my);
+        if (dist >= tol) continue;
+        const preferred = p.id === opts.prefer;
+        const bestPreferred = best?.plot.id === opts.prefer;
+        if (!best || (preferred && !bestPreferred) || (preferred === bestPreferred && dist < best.d)) best = { ll, plot: p, i, x: d.x[i], y: d.y[i], px, py, d: dist };
+      }
+    }
+  }
+  return best;
+}
 
 type ShapeMm = { x1: number; y1: number; x2: number; y2: number };
 /** Absolute start position of an object in canvas mm, for group moves (written back as start + delta). */
 type ObjectSnap = { shape?: ShapeMm; text?: { x: number; y: number }; xy?: { x: number; y: number } };
 
+type AxisRange = { auto: boolean; from: number; to: number };
+type ZoomStep = { before: { x: AxisRange; y: AxisRange }; after: { x: AxisRange; y: AxisRange } };
+/**
+ * The ⌥-drag zooms of each layer (key: graph id / layer id), for the "Undo zoom" button on the plot. Kept for the
+ * session only. A step is offered while the layer's axes still show the range that zoom produced, so editing the
+ * axes or pressing ⌘Z simply hides the button (or brings back the step before).
+ */
+const zoomSteps = new Map<string, ZoomStep[]>();
+const axisRange = (a: AxisRange): AxisRange => ({ auto: a.auto, from: a.from, to: a.to });
+const sameRange = (a: AxisRange, b: AxisRange) => a.auto === b.auto && (a.auto || (a.from === b.from && a.to === b.to));
+/** Index of the zoom step whose result the layer shows now, or -1. */
+function zoomStepIndex(graphId: string, layer: Layer): number {
+  const steps = zoomSteps.get(`${graphId}/${layer.id}`);
+  if (!steps) return -1;
+  for (let i = steps.length - 1; i >= 0; i--) if (sameRange(steps[i].after.x, layer.axes.x) && sameRange(steps[i].after.y, layer.axes.y)) return i;
+  return -1;
+}
+
 const ZOOM_MIN = 0.3;
 const ZOOM_MAX = 10;
-const SVG_STYLE = { display: "block", touchAction: "none" } as const;
+// overflow: what stands outside the page (drafts, supporting data) is drawn on the desk around it; it is not exported
+const SVG_STYLE = { display: "block", touchAction: "none", overflow: "visible" } as const;
 
 /** Stable key of a movable object for groups: "layer:<id>", "shape:<layerId>:<id>", … (null for others). */
 export function memberKey(sel: Selection): string | null {
@@ -124,6 +199,18 @@ export function GraphView({ graph }: { graph: Graph }) {
     if (cropShapeId && !(selection.kind === "shape" && selection.shapeId === cropShapeId)) useDialogs.getState().setCropShapeId(null);
   }, [selection, cropShapeId]);
   const fitDialog = useDialogs((s) => s.fitDialog);
+  useShortcuts((s) => s.overrides); // shortcut labels in menus, tooltips and the status bar follow the user's choices
+  // the fit panel opens tall enough to show all its options (they stack in one column when the window is narrow)
+  const fitPanelRef = useRef<PanelImperativeHandle>(null);
+  const fitOpenFor = fitDialog && fitDialog.graphId === graph.id ? fitDialog.layerId : null;
+  useEffect(() => {
+    if (!fitOpenFor) return;
+    const t = setTimeout(() => {
+      const el = scrollRef.current?.closest(".graph-view")?.querySelector<HTMLElement>(".fit-panel");
+      if (el && fitPanelRef.current && el.scrollHeight > el.clientHeight + 1) fitPanelRef.current.resize(Math.min(520, el.scrollHeight + 2));
+    }, 0);
+    return () => clearTimeout(t);
+  }, [fitOpenFor]);
   const [reader, setReader] = useState<{ xPx: number; yPx: number; text: string } | null>(null);
   const [zoomRect, setZoomRect] = useState<{ x0: number; y0: number; x1: number; y1: number } | null>(null);
   const [drawTool, setDrawTool] = useState<ShapeKind | null>(null);
@@ -193,16 +280,24 @@ export function GraphView({ graph }: { graph: Graph }) {
   const multi = useStore((s) => s.ui.multi);
   const setMulti = useCallback((v: Selection[] | ((m: Selection[]) => Selection[])) => st.getState().setMulti(typeof v === "function" ? v(st.getState().ui.multi) : v), [st]);
   const prevSelection = useRef<Selection>(selection);
+  const prevMulti = useRef<Selection[]>(multi);
   useEffect(() => {
-    // a plain selection change (not via shift) clears the multi-selection
-    if (prevSelection.current !== selection && !shiftSelecting.current) setMulti([]);
+    // a plain selection change (not via shift) clears the multi-selection; one that came with a multi-selection of
+    // its own (store.selectMany: a curve group picked in the inspector) keeps it
+    if (prevSelection.current !== selection && !shiftSelecting.current && prevMulti.current === multi) setMulti([]);
     prevSelection.current = selection;
+    prevMulti.current = multi;
     shiftSelecting.current = false;
-  }, [selection]);
+  }, [selection, multi]);
   const shiftSelecting = useRef(false);
   const [pickDrag, setPickDrag] = useState<{ x0: number; x1: number } | null>(null);
 
   const layout = useMemo(() => layoutGraph(st.getState().project, graph), [sheets, graph, st]);
+  // what is drawn: the layout itself, or the frame of the figure's animation that the timeline is on.
+  // Derived here from the cached layout, so playing never writes the document; hit-testing keeps the full layout.
+  const anim = graph.animation;
+  const animFrame = usePlayback((s) => (s.graphId === graph.id ? s.frame : null));
+  const shownLayout = useMemo(() => (isAnimated(anim) ? animationFrame(layout, anim, frameSchedule(anim).tAt(shownFrame(anim, animFrame))) : layout), [layout, anim, animFrame]);
   const frozenSize = useRef<{ w: number; h: number } | null>(null);
   const zoom = zoomStored ?? 0;
   const pxPerMm = PX_PER_MM_96 * (zoom || 1);
@@ -642,13 +737,43 @@ export function GraphView({ graph }: { graph: Graph }) {
     const members = gr.members.map((m) => memberToSelection(m, graph)).filter((x): x is Selection => !!x);
     return members.length > 1 ? { groupId: gr.id, members } : null;
   };
+  /** The selected plots (the primary selection and the multi-selection), when a plot is selected. */
+  const selectedPlots = (): Extract<Selection, { kind: "plot" }>[] => {
+    const all = [st.getState().ui.selection, ...st.getState().ui.multi];
+    return all[0].kind === "plot" ? all.filter((x): x is Extract<Selection, { kind: "plot" }> => x.kind === "plot") : [];
+  };
+  /** Make the selected curves one group and select it. */
+  const groupPlots = () => {
+    const plots = selectedPlots();
+    if (plots.length < 2) return;
+    st.getState().updateGraph(graph.id, (g) => void createGroup(g, plots.map((x) => x.plotId)));
+    shiftSelecting.current = true;
+    st.getState().selectMany(plots[0], plots.slice(1));
+    useDialogs.getState().showToast(`${plots.length} curves grouped`);
+  };
+  const plotGroupOf = (sel: Selection) => {
+    if (sel.kind !== "plot") return undefined;
+    const plot = layerById(sel.layerId)?.plots.find((p) => p.id === sel.plotId);
+    return plot ? groupOf(graph, plot) : undefined;
+  };
+  /** Select every curve of a group, with the given one shown in the inspector. */
+  const selectPlotGroup = (groupId: string, first?: Selection) => {
+    const all: Selection[] = groupMembers(graph, groupId).map((m) => ({ kind: "plot", graphId: graph.id, layerId: m.layer.id, plotId: m.plot.id }));
+    const primary = (first && all.find((x) => JSON.stringify(x) === JSON.stringify(first))) ?? all[0];
+    if (!primary) return;
+    shiftSelecting.current = true;
+    st.getState().selectMany(primary, all.filter((x) => x !== primary));
+  };
   const groupSelection = () => {
+    if (selectedPlots().length) return groupPlots();
     const keys = [st.getState().ui.selection, ...multi].map(memberKey).filter((k): k is string => !!k);
     if (keys.length < 2) return;
     st.getState().groupObjects(graph.id, keys);
     useDialogs.getState().showToast(`${keys.length} objects grouped`);
   };
   const ungroupSelection = () => {
+    const pg = plotGroupOf(st.getState().ui.selection);
+    if (pg) return st.getState().updateGraph(graph.id, (g) => ungroup(g, pg.id));
     const gr = groupMembersOf(st.getState().ui.selection);
     if (gr) st.getState().ungroupObjects(graph.id, gr.groupId);
   };
@@ -688,10 +813,46 @@ export function GraphView({ graph }: { graph: Graph }) {
     return [...out];
   };
 
+  /**
+   * A press on the empty background of a layer: the object of another layer that lies under the pointer there (a
+   * label, a drawn shape, a legend, a color scale, a curve), if any. Layers drawn later would otherwise shield
+   * everything under their frame. Plots that fill their frame (heatmaps, bars…) do not count: over those the
+   * layer on top wins.
+   */
+  const objectUnder = (e: { clientX: number; clientY: number; target: EventTarget | null }, layerId: string): Selection | null => {
+    const stack = document.elementsFromPoint(e.clientX, e.clientY);
+    for (const el of stack.slice(stack.indexOf(e.target as Element) + 1)) {
+      const lg = el.closest?.("g.layer[data-layer-id]");
+      const lid = lg?.getAttribute("data-layer-id");
+      if (!lid || lid === layerId) continue;
+      const base = { graphId: graph.id, layerId: lid };
+      const text = el.closest("[data-text-id]");
+      if (text) return { kind: "text", ...base, textId: text.getAttribute("data-text-id")! };
+      const shape = el.closest("[data-shape-id]");
+      if (shape) return { kind: "shape", ...base, shapeId: shape.getAttribute("data-shape-id")! };
+      if (el.closest("g.legend")) return { kind: "legend", ...base };
+      if (el.closest("g.color-scale")) return { kind: "colorScale", ...base };
+      const plotId = el.closest("g.plot[data-plot-id]")?.getAttribute("data-plot-id");
+      const plot = plotId ? layerById(lid)?.plots.find((p) => p.id === plotId) : undefined;
+      if (plot && (plot.type === "line" || plot.type === "scatter" || plot.type === "lineScatter" || plot.type === "function")) return { kind: "plot", ...base, plotId: plot.id };
+    }
+    return null;
+  };
+
+  /** Was the press on the empty background of a layer (not on one of its objects, and not in layer mode)? */
+  const onLayerBackground = (e: unknown): e is { clientX: number; clientY: number; target: Element } => {
+    const t = (e as { target?: unknown } | null)?.target;
+    return t instanceof Element && t.classList.contains("layer-hit") && !t.closest(".ui-layer-mode");
+  };
+
   const onPointerDown = useCallback(
     (sel: Selection, e: React.PointerEvent<SVGElement>) => {
+      if (sel.kind === "layer" && onLayerBackground(e)) sel = objectUnder(e, sel.layerId) ?? sel;
       if (e.button !== 0) {
-        select(sel);
+        // a right-click on one of several selected objects keeps them all selected: its menu acts on the selection
+        const ui = st.getState().ui;
+        const key = JSON.stringify(sel);
+        if (![ui.selection, ...ui.multi].some((x) => JSON.stringify(x) === key)) select(sel);
         return;
       }
       e.stopPropagation();
@@ -699,8 +860,8 @@ export function GraphView({ graph }: { graph: Graph }) {
       ctmRef.current = null; // measure the press against the current paper position, then keep it for the gesture
       const [mx, my] = toMm(e);
       const l = "layerId" in sel ? layerById(sel.layerId) : undefined;
-      if (sel.kind === "canvas" || (e.metaKey && !e.altKey)) {
-        // rubber-band selection: on empty canvas, or anywhere with ⌘ held
+      if (sel.kind === "canvas" || ((IS_MAC ? e.metaKey : e.ctrlKey) && !e.altKey)) {
+        // rubber-band selection: on empty canvas, or anywhere with ⌘ (Ctrl on Windows) held
         if (sel.kind === "canvas") {
           select(sel);
           setMulti([]);
@@ -723,7 +884,8 @@ export function GraphView({ graph }: { graph: Graph }) {
           return;
         }
       }
-      if (e.shiftKey && movable(sel) && movable(st.getState().ui.selection)) {
+      const bothPlots = sel.kind === "plot" && st.getState().ui.selection.kind === "plot";
+      if (e.shiftKey && (bothPlots || (movable(sel) && movable(st.getState().ui.selection)))) {
         // shift+click: toggle in the multi-selection
         const cur = st.getState().ui.selection;
         const key = (x: Selection) => JSON.stringify(x);
@@ -852,7 +1014,7 @@ export function GraphView({ graph }: { graph: Graph }) {
       ctmRef.current = null;
       const [mx, my] = toMm(e);
       const sel = st.getState().ui.selection;
-      const layerId = ("layerId" in sel ? sel.layerId : undefined) ?? graph.layers[0]?.id;
+      const layerId = ("layerId" in sel ? sel.layerId : undefined) ?? defaultLayer(graph)?.id;
       if (!layerId) return;
       if (drawTool === "polyline" || drawTool === "polygon") {
         // click by click; a click back on the first point closes a polygon
@@ -869,7 +1031,10 @@ export function GraphView({ graph }: { graph: Graph }) {
           finishPoly(true);
           return;
         }
-        const nd = { ...d, points: [...d.points, { x: mx, y: my }] };
+        // Shift: the new segment keeps to 45° steps from the last point
+        const lastPt = d.points[d.points.length - 1];
+        const [px, py] = e.shiftKey ? snapDirection(lastPt.x, lastPt.y, mx, my) : [mx, my];
+        const nd = { ...d, points: [...d.points, { x: px, y: py }] };
         polyDraftRef.current = nd;
         setPolyDraft(nd);
         return;
@@ -906,14 +1071,14 @@ export function GraphView({ graph }: { graph: Graph }) {
     setGuides(g);
   };
   /**
-   * Smart snapping: the box's edges and centre snap to the edges and centres of the other layers and of
+   * Smart snapping: the box's edges and center snap to the edges and centers of the other layers and of
    * the canvas (within 0.8 mm). Returns the correction and the guide lines to show.
    */
   const smartSnap = useCallback(
     (box: BBox, excludeLayers: Set<string>, tol = 0.8): { dx: number; dy: number; xs: number[]; ys: number[] } => {
       const cx: number[] = [2, layout.widthMm / 2, layout.widthMm - 2];
       const cy: number[] = [2, layout.heightMm / 2, layout.heightMm - 2];
-      for (const l of graph.layers) {
+      for (const l of shownLayers(graph)) {
         if (excludeLayers.has(l.id)) continue;
         const f = l.frame;
         cx.push(f.xMm, f.xMm + f.wMm / 2, f.xMm + f.wMm);
@@ -940,7 +1105,7 @@ export function GraphView({ graph }: { graph: Graph }) {
       const state = st.getState();
       const r = (v: number) => Math.round(v * 10) / 10;
       // A press that wobbles by a few screen pixels is a click, not a drag: nothing moves until the
-      // pointer has travelled CLICK_PX, whatever the zoom.
+      // pointer has traveled CLICK_PX, whatever the zoom.
       const moved = Math.hypot(dx, dy) * pxPerMmRef.current >= CLICK_PX;
       if (d.kind === "marquee") {
         const rect = { x0: Math.min(d.startX, mx), y0: Math.min(d.startY, my), x1: Math.max(d.startX, mx), y1: Math.max(d.startY, my) };
@@ -1025,7 +1190,11 @@ export function GraphView({ graph }: { graph: Graph }) {
       if (d.kind === "draw") {
         let x2 = mx;
         let y2 = my;
-        if (e.shiftKey) {
+        if (d.tool === "bracket") {
+          // a bracket is level or upright
+          if (Math.abs(mx - d.startX) >= Math.abs(my - d.startY)) y2 = d.startY;
+          else x2 = d.startX;
+        } else if (e.shiftKey) {
           // constrain: 45° steps for lines, square for rect/ellipse
           const ddx = mx - d.startX;
           const ddy = my - d.startY;
@@ -1060,6 +1229,7 @@ export function GraphView({ graph }: { graph: Graph }) {
         // move: preview with a transform, commit once at release
         let sdx = moved ? r(dx) : 0;
         let sdy = moved ? r(dy) : 0;
+        if (e.shiftKey) [sdx, sdy] = axisLock(sdx, sdy); // Shift: level or upright, and no snapping
         if (moved && !e.shiftKey) {
           const b = { x0: Math.min(d.s.x1, d.s.x2) + sdx, y0: Math.min(d.s.y1, d.s.y2) + sdy, x1: Math.max(d.s.x1, d.s.x2) + sdx, y1: Math.max(d.s.y1, d.s.y2) + sdy };
           const sn = smartSnap(b, new Set());
@@ -1092,7 +1262,22 @@ export function GraphView({ graph }: { graph: Graph }) {
             return;
           }
         }
-        const pts = d.pts.map((p, i) => (i === d.handle ? { x: p.x + dx, y: p.y + dy } : p));
+        const p0 = d.pts[d.handle];
+        let nx = p0.x + dx;
+        let ny = p0.y + dy;
+        if (e.shiftKey) {
+          // Shift: an end of an open path turns about its neighbor in 45° steps (or slides along its own
+          // direction); any other vertex moves level or upright
+          const last = d.pts.length - 1;
+          const nb = d.shapeKind === "polygon" ? undefined : d.handle === 0 ? d.pts[1] : d.handle === last ? d.pts[last - 1] : undefined;
+          if (nb) [nx, ny] = snapDirection(nb.x, nb.y, nx, ny, Math.atan2(p0.y - nb.y, p0.x - nb.x));
+          else {
+            const [ldx, ldy] = axisLock(dx, dy);
+            nx = p0.x + ldx;
+            ny = p0.y + ldy;
+          }
+        }
+        const pts = d.pts.map((p, i) => (i === d.handle ? { x: nx, y: ny } : p));
         writeShapePoints(d.layerId, d.shapeId, pts);
         if (final) {
           drag.current = null;
@@ -1113,15 +1298,23 @@ export function GraphView({ graph }: { graph: Graph }) {
           }
         }
         const n: ShapeMm = { ...s0 };
-        if (d.shapeKind === "line" || d.shapeKind === "arrow") {
+        if (d.shapeKind === "line" || d.shapeKind === "arrow" || d.shapeKind === "bracket") {
+          // a level (or upright) bracket stays that way: its ends slide along it; drag the bracket itself to shift it
+          const level = d.shapeKind === "bracket" && Math.abs(s0.y2 - s0.y1) < 0.01;
+          const upright = d.shapeKind === "bracket" && !level && Math.abs(s0.x2 - s0.x1) < 0.01;
           if (d.handle === 0) {
-            n.x1 = s0.x1 + dx;
-            n.y1 = s0.y1 + dy;
+            if (!upright) n.x1 = s0.x1 + dx;
+            if (!level) n.y1 = s0.y1 + dy;
           } else {
-            n.x2 = s0.x2 + dx;
-            n.y2 = s0.y2 + dy;
+            if (!upright) n.x2 = s0.x2 + dx;
+            if (!level) n.y2 = s0.y2 + dy;
           }
-        } else if (d.lockAspect && Math.abs(s0.x2 - s0.x1) > 0.01 && Math.abs(s0.y2 - s0.y1) > 0.01) {
+          if (e.shiftKey && d.shapeKind !== "bracket") {
+            // Shift: the dragged end turns about the other one in 45° steps, or slides along the line as it was
+            if (d.handle === 0) [n.x1, n.y1] = snapDirection(s0.x2, s0.y2, n.x1, n.y1, Math.atan2(s0.y1 - s0.y2, s0.x1 - s0.x2));
+            else [n.x2, n.y2] = snapDirection(s0.x1, s0.y1, n.x2, n.y2, Math.atan2(s0.y2 - s0.y1, s0.x2 - s0.x1));
+          }
+        } else if ((d.lockAspect || e.shiftKey) && Math.abs(s0.x2 - s0.x1) > 0.01 && Math.abs(s0.y2 - s0.y1) > 0.01) {
           // scale about the opposite corner, keeping the proportions (the larger of the two pulls wins)
           const left = d.handle === 0 || d.handle === 2;
           const top = d.handle === 0 || d.handle === 1;
@@ -1207,6 +1400,7 @@ export function GraphView({ graph }: { graph: Graph }) {
       if (d.kind === "group") {
         let gdx = moved ? r(dx) : 0;
         let gdy = moved ? r(dy) : 0;
+        if (e.shiftKey) [gdx, gdy] = axisLock(gdx, gdy);
         if (moved && d.box && !e.shiftKey) {
           const exclude = new Set(d.items.filter((i) => i.kind === "layer").map((i) => (i as { layerId: string }).layerId));
           const sn = smartSnap({ x0: d.box.x0 + gdx, y0: d.box.y0 + gdy, x1: d.box.x1 + gdx, y1: d.box.y1 + gdy }, exclude);
@@ -1241,17 +1435,21 @@ export function GraphView({ graph }: { graph: Graph }) {
         const xb = ll.x.scale.invert(Math.max(d.startX, mx));
         const ya = ll.y.scale.invert(Math.max(d.startY, my));
         const yb = ll.y.scale.invert(Math.min(d.startY, my));
+        const lay = graph.layers.find((x) => x.id === d.layerId);
+        if (!lay) return;
+        const before = { x: axisRange(lay.axes.x), y: axisRange(lay.axes.y) };
+        const after = {
+          x: !lay.axes.x.scale || !ll.x.scale.categories ? { auto: false, from: Math.min(xa, xb), to: Math.max(xa, xb) } : before.x,
+          y: !ll.y.scale.categories ? { auto: false, from: Math.min(ya, yb), to: Math.max(ya, yb) } : before.y,
+        };
+        if (after.x === before.x && after.y === before.y) return;
+        // remember the step for the "Undo zoom" button; steps that were undone another way are dropped
+        const key = `${graph.id}/${lay.id}`;
+        const kept = (zoomSteps.get(key) ?? []).slice(0, zoomStepIndex(graph.id, lay) + 1);
+        zoomSteps.set(key, [...kept, { before, after }].slice(-30));
         state.updateLayer(graph.id, d.layerId, (l) => {
-          if (!l.axes.x.scale || !ll.x.scale.categories) {
-            l.axes.x.auto = false;
-            l.axes.x.from = Math.min(xa, xb);
-            l.axes.x.to = Math.max(xa, xb);
-          }
-          if (!ll.y.scale.categories) {
-            l.axes.y.auto = false;
-            l.axes.y.from = Math.min(ya, yb);
-            l.axes.y.to = Math.max(ya, yb);
-          }
+          Object.assign(l.axes.x, after.x);
+          Object.assign(l.axes.y, after.y);
         });
         return;
       }
@@ -1318,20 +1516,19 @@ export function GraphView({ graph }: { graph: Graph }) {
         }
         return;
       }
-      // move drags: layer, legend, colour scale, text — previewed with a transform, one store write at release
+      // move drags: layer, legend, color scale, text — previewed with a transform, one store write at release
       let mdx = moved ? r(dx) : 0;
       let mdy = moved ? r(dy) : 0;
+      if (e.shiftKey) [mdx, mdy] = axisLock(mdx, mdy); // Shift: level or upright, and no snapping
       let frame: Layer["frame"] | null = null;
       if (d.kind === "layer" && moved) {
-        const f = { ...d.frame, xMm: r(d.frame.xMm + dx), yMm: r(d.frame.yMm + dy) };
+        const f = { ...d.frame, xMm: r(d.frame.xMm + mdx), yMm: r(d.frame.yMm + mdy) };
         if (!e.shiftKey) {
           const sn = smartSnap({ x0: f.xMm, y0: f.yMm, x1: f.xMm + f.wMm, y1: f.yMm + f.hMm }, new Set([d.layerId]));
           f.xMm = r(f.xMm + sn.dx);
           f.yMm = r(f.yMm + sn.dy);
           showGuides(final ? null : sn);
         } else showGuides(null);
-        f.xMm = Math.max(0, Math.min(f.xMm, layout.widthMm - f.wMm));
-        f.yMm = Math.max(0, f.yMm);
         frame = f;
         mdx = r(f.xMm - d.frame.xMm);
         mdy = r(f.yMm - d.frame.yMm);
@@ -1411,29 +1608,10 @@ export function GraphView({ graph }: { graph: Graph }) {
         return;
       }
       const [mx, my] = toMm(e);
-      let best: { d: number; text: string; x: number; y: number } | null = null;
-      for (const ll of layout.layers) {
-        if (ll.is3d) continue;
-        const f = ll.layer.frame;
-        if (mx < f.xMm - 2 || mx > f.xMm + f.wMm + 2 || my < f.yMm - 2 || my > f.yMm + f.hMm + 2) continue;
-        for (const p of ll.layer.plots) {
-          if (!p.visible || !["scatter", "line", "lineScatter", "fitCurve"].includes(p.type)) continue;
-          const d = ll.data.get(p.id);
-          if (!d) continue;
-          const ys = p.yAxis === "y2" && ll.y2 ? ll.y2.scale : ll.y.scale;
-          for (let i = 0; i < d.x.length; i++) {
-            const px = ll.x.scale.map(d.x[i]);
-            const py = ys.map(d.y[i]);
-            if (px === null || py === null) continue;
-            const dist = Math.hypot(px - mx, py - my);
-            if (dist < 2.5 && (!best || dist < best.d)) {
-              const fmt = (v: number) => Number(v.toPrecision(6)).toString();
-              best = { d: dist, text: `${p.name}: x = ${fmt(d.x[i])}, y = ${fmt(d.y[i])}${d.yErr ? ` ± ${fmt(d.yErr[i])}` : ""}`, x: px, y: py };
-            }
-          }
-        }
-      }
-      setReader(best ? { xPx: best.x * pxPerMm, yPx: best.y * pxPerMm, text: best.text } : null);
+      const hit = pointNear(layout.layers, mx, my, { fits: true });
+      const fmt = (v: number) => Number(v.toPrecision(6)).toString();
+      const yErr = hit ? hit.ll.data.get(hit.plot.id)?.yErr : undefined;
+      setReader(hit ? { xPx: hit.px * pxPerMm, yPx: hit.py * pxPerMm, text: `${hit.plot.name}: x = ${fmt(hit.x)}, y = ${fmt(hit.y)}${yErr ? ` ± ${fmt(yErr[hit.i])}` : ""}` } : null);
     },
     [layout, pxPerMm, rangePick, toMm],
   );
@@ -1458,6 +1636,8 @@ export function GraphView({ graph }: { graph: Graph }) {
 
   const onDoubleClick = useCallback(
     (sel: Selection, _e: unknown, target?: "title" | "legendEntry" | "text", extra?: string) => {
+      // like a single press: a label of another layer under this layer's empty background is the one meant
+      if (sel.kind === "layer" && onLayerBackground(_e)) sel = objectUnder(_e, sel.layerId) ?? sel;
       const state = st.getState();
       state.setInspectorCollapsed(false);
       const ll = "layerId" in sel ? layout.layers.find((x) => x.layer.id === sel.layerId) : undefined;
@@ -1471,12 +1651,15 @@ export function GraphView({ graph }: { graph: Graph }) {
         if (sel.axis === "x") openEditor(axis.title, f.xMm + f.wMm / 2 - w / 2, ag.titlePos, w, axis.titleStyle.sizePt, (v) => state.updateAxis(graph.id, ll.layer.id, sel.axis, (a) => void (a.title = v)));
         else
           openEditor(axis.title, ag.side < 0 ? ag.titlePos - ag.titleExtent : ag.titlePos, f.yMm + f.hMm / 2 + w / 2, w, axis.titleStyle.sizePt, (v) => state.updateAxis(graph.id, ll.layer.id, sel.axis, (a) => void (a.title = v)), -90);
-      } else if (sel.kind === "legend" && target === "legendEntry" && extra) {
-        const entry = ll.legend.entries.find((e) => e.plot.id === extra);
-        if (!entry) return;
+      } else if (sel.kind === "legend") {
+        // the entry under the pointer (the press captures the pointer on the whole legend, so the event names no entry)
         const lg = ll.legend;
+        const at = _e as { clientX?: number; clientY?: number } | null;
+        const entry = extra ? lg.entries.find((e) => e.plot.id === extra) : typeof at?.clientX === "number" && typeof at.clientY === "number" ? legendEntryAt(lg, ...toMm({ clientX: at.clientX, clientY: at.clientY })) : undefined;
+        if (!entry) return;
+        const plotId = entry.plot.id;
         openEditor(entry.plot.name, lg.x + lg.pad + entry.x + ll.layer.legend.symbolWidthMm + 1.2, lg.y + entry.y, Math.max(20, lg.w), ll.layer.legend.style.sizePt, (v) =>
-          state.updatePlot(graph.id, ll.layer.id, extra, (p) => void (p.name = v)),
+          state.updatePlot(graph.id, ll.layer.id, plotId, (p) => void (p.name = v)),
         );
       } else if (sel.kind === "text") {
         const t = ll.layer.texts.find((x) => x.id === sel.textId);
@@ -1493,7 +1676,7 @@ export function GraphView({ graph }: { graph: Graph }) {
     [graph.id, layout.layers, openEditor, st],
   );
 
-  // Stable handler identities so memoised SVG layers are not re-rendered by handler churn.
+  // Stable handler identities so memoized SVG layers are not re-rendered by handler churn.
   const handlersRef = useRef({ onPointerDown, onDoubleClick });
   handlersRef.current = { onPointerDown, onDoubleClick };
   const stablePointerDown = useCallback<InteractiveProps["onPointerDown"]>((sel, e) => handlersRef.current.onPointerDown(sel, e), []);
@@ -1512,20 +1695,9 @@ export function GraphView({ graph }: { graph: Graph }) {
       if (state.ui.activeTab?.kind !== "graph" || state.ui.activeTab.id !== graph.id) return;
       const sel = state.ui.selection;
       const mod = e.metaKey || e.ctrlKey;
-      if (mod && (e.key === "=" || e.key === "+")) {
-        e.preventDefault();
-        setZoom((zoom || 1) * 1.25);
-      } else if (mod && e.key === "-") {
-        e.preventDefault();
-        setZoom((zoom || 1) / 1.25);
-      } else if (mod && e.key === "0") {
-        e.preventDefault();
-        zoomFit();
-      } else if (mod && e.key.toLowerCase() === "g") {
-        e.preventDefault();
-        if (e.shiftKey) ungroupSelection();
-        else groupSelection();
-      } else if (mod && e.key.toLowerCase() === "a") {
+      // zoom, group, duplicate and the animation keys can be changed by the user: they arrive as commands
+      // (App.tsx looks the key up in shortcuts.ts → handleMenu → the "plotkit:zoom" / "plotkit:graph" listeners below)
+      if (mod && e.key.toLowerCase() === "a") {
         e.preventDefault();
         selectAll();
       } else if (mod && e.key.toLowerCase() === "c" && (sel.kind === "shape" || sel.kind === "text" || sel.kind === "layer" || multi.length)) {
@@ -1533,10 +1705,6 @@ export function GraphView({ graph }: { graph: Graph }) {
         copySelection();
       } else if (mod && e.key.toLowerCase() === "v" && (state.ui.objectClipboard?.length || state.ui.layerClipboard?.length)) {
         // do not preventDefault: a picture in the system clipboard arrives through the paste event first
-        pasteAll();
-      } else if (mod && e.key.toLowerCase() === "d" && (sel.kind === "shape" || sel.kind === "text" || sel.kind === "layer" || multi.length)) {
-        e.preventDefault();
-        copySelection();
         pasteAll();
       } else if ((e.key === "Delete" || e.key === "Backspace") && !mod) {
         e.preventDefault();
@@ -1602,9 +1770,30 @@ export function GraphView({ graph }: { graph: Graph }) {
     const onDraw = (e: Event) => {
       if (st.getState().ui.activeTab?.id === graph.id) setDrawTool((e as CustomEvent<ShapeKind>).detail);
     };
+    // commands that need the selection of this view (their keys are the user's to choose)
+    const onGraphCommand = (e: Event) => {
+      const state = st.getState();
+      if (state.ui.activeTab?.id !== graph.id) return;
+      const id = (e as CustomEvent<string>).detail;
+      const sel = state.ui.selection;
+      if (id === "group") groupSelection();
+      else if (id === "ungroup") ungroupSelection();
+      else if (id === "duplicate") {
+        if (sel.kind === "shape" || sel.kind === "text" || sel.kind === "layer" || multi.length) {
+          copySelection();
+          pasteAll();
+        }
+      } else if (graph.animation?.enabled) {
+        if (id === "animStepBack") stepFrame(graph, -1);
+        else if (id === "animStepForward") stepFrame(graph, 1);
+        else if (id === "animFirst") stepFrame(graph, "first");
+        else if (id === "animLast") stepFrame(graph, "last");
+      }
+    };
     window.addEventListener("plotkit:zoom", onZoom);
     window.addEventListener("plotkit:addText", onAddText);
     window.addEventListener("plotkit:draw", onDraw);
+    window.addEventListener("plotkit:graph", onGraphCommand);
     // a picture pasted from the clipboard lands on the selected layer
     const onPaste = (e: ClipboardEvent) => {
       const target = e.target as HTMLElement | null;
@@ -1622,6 +1811,7 @@ export function GraphView({ graph }: { graph: Graph }) {
       window.removeEventListener("plotkit:zoom", onZoom);
       window.removeEventListener("plotkit:addText", onAddText);
       window.removeEventListener("plotkit:draw", onDraw);
+      window.removeEventListener("plotkit:graph", onGraphCommand);
       window.removeEventListener("paste", onPaste);
     };
   });
@@ -1677,7 +1867,7 @@ export function GraphView({ graph }: { graph: Graph }) {
     return layers.map((layer) => {
       const l: Layer = JSON.parse(JSON.stringify(layer));
       l.id = uid();
-      l.plots.forEach((pl) => (pl.id = uid()));
+      renewPlotIds(l, uid);
       l.shapes?.forEach((sh) => (sh.id = uid()));
       l.texts.forEach((t) => (t.id = uid()));
       l.frame = { ...l.frame, xMm: l.frame.xMm + 5, yMm: l.frame.yMm + 5 };
@@ -1687,11 +1877,12 @@ export function GraphView({ graph }: { graph: Graph }) {
     });
   };
 
-  /** ⌘A: every layer plus every free-standing shape and text (objects attached to axes follow their layer). */
+  /** ⌘A: every shown layer plus every free-standing shape and text of those (objects attached to axes follow their layer). */
   const selectAll = () => {
     const found: Selection[] = [];
-    for (const l of graph.layers) found.push({ kind: "layer", graphId: graph.id, layerId: l.id });
-    for (const l of graph.layers) {
+    const shown = shownLayers(graph);
+    for (const l of shown) found.push({ kind: "layer", graphId: graph.id, layerId: l.id });
+    for (const l of shown) {
       for (const sh of l.shapes ?? []) if (sh.coord !== "data") found.push({ kind: "shape", graphId: graph.id, layerId: l.id, shapeId: sh.id });
       for (const t of l.texts) if (t.coord !== "data") found.push({ kind: "text", graphId: graph.id, layerId: l.id, textId: t.id });
     }
@@ -1711,7 +1902,7 @@ export function GraphView({ graph }: { graph: Graph }) {
     const items = state.ui.objectClipboard;
     if (!items?.length) return none;
     const sel = state.ui.selection;
-    const layerId = targetLayerId ?? ("layerId" in sel ? sel.layerId : undefined) ?? graph.layers[0]?.id;
+    const layerId = targetLayerId ?? ("layerId" in sel ? sel.layerId : undefined) ?? defaultLayer(graph)?.id;
     const ll = layout.layers.find((x) => x.layer.id === layerId);
     if (!layerId || !ll) {
       // pasting into a layer that is only being created now: objects land in mm coordinates
@@ -1777,8 +1968,20 @@ export function GraphView({ graph }: { graph: Graph }) {
   const deleteSelection = () => {
     const state = st.getState();
     const sel = state.ui.selection;
-    if (sel.kind === "plot") state.deletePlot(graph.id, sel.layerId, sel.plotId);
-    else if (sel.kind === "text") state.updateLayer(graph.id, sel.layerId, (l) => void (l.texts = l.texts.filter((t) => t.id !== sel.textId)));
+    if (sel.kind === "plot") {
+      const plots = selectedPlots();
+      if (plots.length > 1) {
+        // several curves (a whole group, or Shift-clicked ones) go in one undo step, after a question
+        void confirmDialog(`Remove the ${plots.length} selected plots from the figure?`).then((ok) => {
+          if (!ok) return;
+          const ids = new Set(plots.map((x) => x.plotId));
+          st.getState().updateGraph(graph.id, (g) => g.layers.forEach((l) => l.plots.some((p) => ids.has(p.id)) && (l.plots = l.plots.filter((p) => !ids.has(p.id)))));
+          st.getState().setSelection({ kind: "canvas", graphId: graph.id });
+        });
+        return;
+      }
+      state.deletePlot(graph.id, sel.layerId, sel.plotId);
+    } else if (sel.kind === "text") state.updateLayer(graph.id, sel.layerId, (l) => void (l.texts = l.texts.filter((t) => t.id !== sel.textId)));
     else if (sel.kind === "shape" || multi.length) {
       const all = [sel, ...multi];
       const layerIds = all.filter((x) => x.kind === "layer").map((x) => (x as { layerId: string }).layerId);
@@ -1817,10 +2020,20 @@ export function GraphView({ graph }: { graph: Graph }) {
     state.setSelection({ kind: "canvas", graphId: graph.id });
   };
 
+  /** Hide the selected layers. The figure is selected afterwards: its Layers list is where they are shown again. */
+  const hideSelectedLayers = () => {
+    const state = st.getState();
+    const ids = new Set([state.ui.selection, ...multi].filter((x): x is Extract<Selection, { kind: "layer" }> => x.kind === "layer").map((x) => x.layerId));
+    if (!ids.size) return;
+    state.updateGraph(graph.id, (g) => g.layers.forEach((l) => ids.has(l.id) && setLayerShown(l, false)));
+    setMulti([]);
+    state.setSelection({ kind: "canvas", graphId: graph.id });
+  };
+
   const addText = () => {
     const state = st.getState();
     const sel = state.ui.selection;
-    const layer = ("layerId" in sel ? layerById(sel.layerId) : undefined) ?? graph.layers[0];
+    const layer = ("layerId" in sel ? layerById(sel.layerId) : undefined) ?? defaultLayer(graph);
     if (!layer) return;
     const t: TextItem = {
       id: uid(),
@@ -1841,32 +2054,126 @@ export function GraphView({ graph }: { graph: Graph }) {
     );
   };
 
+  /**
+   * Right-click ▸ Copy to new figure: the selected layers (panels) with everything in them, or — with plots
+   * selected — those plots alone in copies of their layers. The new figure opens in its own tab.
+   */
+  const copyToNewFigure = () => {
+    const state = st.getState();
+    const all = [state.ui.selection, ...state.ui.multi];
+    const plots = selectedPlots();
+    const layerIds = plots.length ? plots.map((x) => x.layerId) : all.filter((x) => x.kind === "layer").map((x) => (x as { layerId: string }).layerId);
+    if (!layerIds.length) return;
+    const id = state.copyToNewGraph(graph.id, [...new Set(layerIds)], plots.length ? plots.map((x) => x.plotId) : undefined);
+    const made = st.getState().project.graphs.find((g) => g.id === id);
+    if (made) useDialogs.getState().showToast(`Copied to “${made.name}”`);
+  };
+
   const contextMenu = (e: React.MouseEvent) => {
     e.preventDefault();
     const state = st.getState();
     const sel = state.ui.selection;
     const items: MenuItem[] = [];
+    const toast = (msg: string) => useDialogs.getState().showToast(msg);
+    const told = (res: ExcludeResult, excluded: boolean) =>
+      toast(res.error ?? (!res.moved ? "No points there." : excluded ? `${res.moved === 1 ? "The point is" : `${res.moved} points are`} now in the column “${res.column}”. Right-click ${res.moved === 1 ? "it" : "one"} to bring it back.` : `${res.moved === 1 ? "The point is" : `${res.moved} points are`} back in “${res.column}”.`));
+    // the data point under the pointer: exclude it (or bring it back), or show its cell
+    const [pmx, pmy] = toMm(e);
+    const hit = pointNear(layout.layers, pmx, pmy, { prefer: sel.kind === "plot" ? sel.plotId : undefined });
+    if (hit) {
+      const row = plotRowIndices(state.project, hit.plot)[hit.i];
+      const fmt = (v: number) => Number(v.toPrecision(4)).toString();
+      const at = `x = ${fmt(hit.x)}, y = ${fmt(hit.y)}`;
+      const ref = [graph.id, hit.ll.layer.id, hit.plot.id] as const;
+      if (row !== undefined) {
+        if (isExcludedPlot(state.project, hit.plot)) items.push({ label: `Include point again (${at})`, onSelect: () => told(state.includePoints(...ref, [row]), false) });
+        else if (canExclude(state.project, hit.plot)) items.push({ label: `Exclude point (${at})`, onSelect: () => told(state.excludePoints(...ref, [row]), true) });
+        items.push({ label: "Show this point in the sheet", onSelect: () => goToDataSheet(hit.plot.source.sheetId, [hit.plot.source.yColId], row) }, { type: "sep" });
+      }
+    }
+    const valuePlots = dataCurves(state.project, graph, "values").length;
     if (sel.kind === "layer") {
       items.push(
-        { label: multi.length ? "Duplicate selection" : "Duplicate layer", shortcut: "⌘D", onSelect: () => { copySelection(); pasteAll(); } },
-        { label: multi.length ? "Copy selection" : "Copy layer", shortcut: "⌘C", onSelect: copySelection },
-        { label: "Paste", shortcut: "⌘V", disabled: !state.ui.layerClipboard?.length && !state.ui.objectClipboard?.length, onSelect: pasteAll },
-        { label: "Select all", shortcut: "⌘A", onSelect: selectAll },
-        { label: "Group selection", shortcut: "⌘G", disabled: multi.length < 1, onSelect: groupSelection },
-        { label: "Ungroup", shortcut: "⇧⌘G", disabled: !groupMembersOf(sel), onSelect: ungroupSelection },
+        { label: multi.length ? "Duplicate selection" : "Duplicate layer", shortcut: keyHint("duplicate"), onSelect: () => { copySelection(); pasteAll(); } },
+        { label: multi.length ? "Copy selection" : "Copy layer", shortcut: formatKeys("Mod+C"), onSelect: copySelection },
+        { label: "Paste", shortcut: formatKeys("Mod+V"), disabled: !state.ui.layerClipboard?.length && !state.ui.objectClipboard?.length, onSelect: pasteAll },
+        { label: "Copy to new figure", onSelect: copyToNewFigure },
+        { label: "Select all", shortcut: formatKeys("Mod+A"), onSelect: selectAll },
+        { label: "Group selection", shortcut: keyHint("group"), disabled: multi.length < 1, onSelect: groupSelection },
+        { label: "Ungroup", shortcut: keyHint("ungroup"), disabled: !groupMembersOf(sel), onSelect: ungroupSelection },
         { type: "sep" },
         { label: "Fit a curve…", onSelect: () => useDialogs.getState().setFitDialog({ graphId: graph.id, layerId: sel.layerId, plotId: null }) },
+        { label: "Compare groups…", disabled: valuePlots < 2, onSelect: () => startCompare(graph.id, [], sel.layerId) },
+        { label: "Statistics", disabled: !valuePlots, onSelect: () => startStatistics(graph.id, [], sel.layerId) },
         { label: "Add text", onSelect: addText },
         { type: "sep" },
+        { label: multi.some((m) => m.kind === "layer") ? "Hide layers" : "Hide layer", onSelect: hideSelectedLayers },
         { label: "Delete layer", disabled: graph.layers.length < 2, onSelect: deleteSelection },
       );
     } else if (sel.kind === "plot") {
       const plot = graph.layers.find((l) => l.id === sel.layerId)?.plots.find((p) => p.id === sel.plotId);
       const src = plot && !plot.func ? plotColumnIds(state.project, plot) : null;
       const pasteTargets = [sel, ...multi.filter((m): m is Extract<Selection, { kind: "plot" }> => m.kind === "plot")];
+      const pg = plotGroupOf(sel);
+      const ids = pasteTargets.map((t) => t.plotId);
+      const many = pasteTargets.length > 1;
+      // only the commands that can read the selected plots: a histogram is not offered Smooth
+      const ops = GRAPH_OPS.filter((op) => opFits(op, graph, ids));
+      const analyze: MenuItem[] = ops.map((op) => ({
+        label: `${ANALYSIS_LABELS[op]}…`,
+        disabled: op === "average" && !many,
+        onSelect: () => startCurveAnalysis(op, graph.id, ids),
+      }));
+      const hasValues = opFits("cdf", graph, ids);
+      if (hasValues) analyze.push(...(analyze.length ? [{ type: "sep" } as MenuItem] : []), { label: "Statistics", onSelect: () => startStatistics(graph.id, ids, sel.layerId) });
+      const excluded = !!plot && isExcludedPlot(state.project, plot);
+      // drag an x range on the graph: the points of the selected plots in it are excluded
+      const excludeRange = () =>
+        useDialogs.getState().setRangePick({
+          graphId: graph.id,
+          layerId: sel.layerId,
+          what: "x range of the points to exclude",
+          onPick: (from, to) => {
+            useDialogs.getState().setRangePick(null);
+            const now = st.getState();
+            const total: ExcludeResult = { moved: 0 };
+            oneUndoStep(() => {
+              for (const t of pasteTargets) {
+                const pl = now.project.graphs.find((g) => g.id === graph.id)?.layers.find((l) => l.id === t.layerId)?.plots.find((x) => x.id === t.plotId);
+                if (!pl || t.layerId !== sel.layerId || !canExclude(now.project, pl)) continue;
+                const d = getPlotData(now.project, pl);
+                const rows = plotRowIndices(now.project, pl).filter((_, k) => d.x[k] >= from && d.x[k] <= to);
+                const res = st.getState().excludePoints(graph.id, t.layerId, t.plotId, rows);
+                total.moved += res.moved;
+                total.error ??= res.error;
+                total.column = total.column && res.column && total.column !== res.column ? "(excluded)" : (res.column ?? total.column);
+              }
+            });
+            if (total.moved) total.error = undefined;
+            told(total, true);
+          },
+        });
       items.push(
         { label: "Go to data sheet", disabled: !src, onSelect: () => src && goToDataSheet(src.sheetId, src.colIds) },
         { label: "Fit a curve…", onSelect: () => useDialogs.getState().setFitDialog({ graphId: graph.id, layerId: sel.layerId, plotId: sel.plotId }) },
+        { label: many ? `Copy ${pasteTargets.length} plots to new figure` : "Copy to new figure", onSelect: copyToNewFigure },
+        ...(analyze.length ? [{ type: "submenu", label: many ? `Analyze ${pasteTargets.length} ${opFits("smooth", graph, ids) ? "curves" : "plots"}` : "Analyze", items: analyze } as MenuItem] : []),
+        // one curve of a time series is no group; boxes, histograms and bars are, and so are several selected plots
+        ...(hasValues && (many || ["box", "histogram", "bar"].includes(plot?.type ?? "")) ? [{ label: many ? `Compare ${pasteTargets.length} groups…` : "Compare groups…", disabled: valuePlots < 2, onSelect: () => startCompare(graph.id, many ? ids : [], sel.layerId) } as MenuItem] : []),
+        ...(excluded
+          ? [{ label: "Include all excluded points", onSelect: () => told(state.includePoints(graph.id, sel.layerId, sel.plotId, "all"), false) } as MenuItem]
+          : plot && canExclude(state.project, plot)
+            ? [{ label: "Exclude points in an x range…", onSelect: excludeRange } as MenuItem]
+            : []),
+        { type: "sep" },
+        { label: pasteTargets.length > 1 ? `Group ${pasteTargets.length} curves` : "Group curves", shortcut: keyHint("group"), disabled: pasteTargets.length < 2, onSelect: groupPlots },
+        ...(pg
+          ? ([
+              { label: `Select group “${pg.name}”`, onSelect: () => selectPlotGroup(pg.id, sel) },
+              { label: "Remove from group", onSelect: () => state.updatePlot(graph.id, sel.layerId, sel.plotId, (p) => void delete p.groupId) },
+              { label: "Ungroup", shortcut: keyHint("ungroup"), onSelect: ungroupSelection },
+            ] as MenuItem[])
+          : []),
         { type: "sep" },
         { label: "Copy style", disabled: !plot, onSelect: () => plot && copyPlotStyle(plot, true) },
         {
@@ -1888,24 +2195,24 @@ export function GraphView({ graph }: { graph: Graph }) {
         { label: "Bring to front", onSelect: () => state.movePlot(graph.id, sel.layerId, sel.plotId, "front") },
         { label: "Send to back", onSelect: () => state.movePlot(graph.id, sel.layerId, sel.plotId, "back") },
         { type: "sep" },
-        { label: "Remove plot", onSelect: deleteSelection },
+        { label: pasteTargets.length > 1 ? `Remove ${pasteTargets.length} plots` : "Remove plot", onSelect: deleteSelection },
       );
     } else if (sel.kind === "text") {
       items.push(
-        { label: "Copy", shortcut: "⌘C", onSelect: copySelection },
-        { label: "Duplicate", shortcut: "⌘D", onSelect: () => { copySelection(); pasteAll(); } },
-        { label: "Group selection", shortcut: "⌘G", disabled: multi.length < 1, onSelect: groupSelection },
-        { label: "Ungroup", shortcut: "⇧⌘G", disabled: !groupMembersOf(sel), onSelect: ungroupSelection },
+        { label: "Copy", shortcut: formatKeys("Mod+C"), onSelect: copySelection },
+        { label: "Duplicate", shortcut: keyHint("duplicate"), onSelect: () => { copySelection(); pasteAll(); } },
+        { label: "Group selection", shortcut: keyHint("group"), disabled: multi.length < 1, onSelect: groupSelection },
+        { label: "Ungroup", shortcut: keyHint("ungroup"), disabled: !groupMembersOf(sel), onSelect: ungroupSelection },
         { type: "sep" },
         { label: "Delete text", onSelect: deleteSelection },
       );
     } else if (sel.kind === "shape") {
       const shp = layerById(sel.layerId)?.shapes?.find((x) => x.id === sel.shapeId);
       items.push(
-        { label: "Copy", shortcut: "⌘C", onSelect: copySelection },
-        { label: "Duplicate", shortcut: "⌘D", onSelect: () => { copySelection(); pasteAll(); } },
-        { label: "Group selection", shortcut: "⌘G", disabled: multi.length < 1, onSelect: groupSelection },
-        { label: "Ungroup", shortcut: "⇧⌘G", disabled: !groupMembersOf(sel), onSelect: ungroupSelection },
+        { label: "Copy", shortcut: formatKeys("Mod+C"), onSelect: copySelection },
+        { label: "Duplicate", shortcut: keyHint("duplicate"), onSelect: () => { copySelection(); pasteAll(); } },
+        { label: "Group selection", shortcut: keyHint("group"), disabled: multi.length < 1, onSelect: groupSelection },
+        { label: "Ungroup", shortcut: keyHint("ungroup"), disabled: !groupMembersOf(sel), onSelect: ungroupSelection },
         { type: "sep" },
         { label: "Bring forward", onSelect: () => state.moveShape(graph.id, sel.layerId, sel.shapeId, 1) },
         { label: "Send backward", onSelect: () => state.moveShape(graph.id, sel.layerId, sel.shapeId, -1) },
@@ -1918,16 +2225,18 @@ export function GraphView({ graph }: { graph: Graph }) {
     } else if (sel.kind === "legend") {
       items.push({ label: "Hide legend", onSelect: deleteSelection });
     } else {
+      const hiddenCount = graph.layers.length - shownLayers(graph).length;
       items.push(
         { label: "Add layer", onSelect: () => state.setSelection({ kind: "layer", graphId: graph.id, layerId: state.addLayer(graph.id) }) },
-        { label: "Paste", shortcut: "⌘V", disabled: !state.ui.layerClipboard?.length && !state.ui.objectClipboard?.length, onSelect: pasteAll },
-        { label: "Select all", shortcut: "⌘A", onSelect: selectAll },
-        { label: "Group selection", shortcut: "⌘G", disabled: multi.length < 1, onSelect: groupSelection },
-        { label: "Ungroup", shortcut: "⇧⌘G", disabled: !groupMembersOf(sel), onSelect: ungroupSelection },
+        ...(hiddenCount ? [{ label: hiddenCount > 1 ? `Show the ${hiddenCount} hidden layers` : "Show the hidden layer", onSelect: () => state.updateGraph(graph.id, (g) => g.layers.forEach((l) => setLayerShown(l, true))) }] : []),
+        { label: "Paste", shortcut: formatKeys("Mod+V"), disabled: !state.ui.layerClipboard?.length && !state.ui.objectClipboard?.length, onSelect: pasteAll },
+        { label: "Select all", shortcut: formatKeys("Mod+A"), onSelect: selectAll },
+        { label: "Group selection", shortcut: keyHint("group"), disabled: multi.length < 1, onSelect: groupSelection },
+        { label: "Ungroup", shortcut: keyHint("ungroup"), disabled: !groupMembersOf(sel), onSelect: ungroupSelection },
         { label: "Add text", onSelect: addText },
       );
     }
-    items.push({ type: "sep" }, { label: "Export graph…", shortcut: "⇧⌘E", onSelect: () => useDialogs.getState().setExportDialog({ graphId: graph.id }) }, { label: "Copy as SVG", onSelect: () => void exportGraphAs(graph.id, "clipboard-svg") }, { label: "Copy as PNG", onSelect: () => void exportGraphAs(graph.id, "clipboard-png") });
+    items.push({ type: "sep" }, { label: "Export graph…", shortcut: keyHint("exportGraph"), onSelect: () => useDialogs.getState().setExportDialog({ graphId: graph.id }) }, { label: "Copy as SVG", onSelect: () => void exportGraphAs(graph.id, "clipboard-svg") }, { label: "Copy as PNG", onSelect: () => void exportGraphAs(graph.id, "clipboard-png") });
     openMenu(e, items);
   };
 
@@ -1941,7 +2250,7 @@ export function GraphView({ graph }: { graph: Graph }) {
   const shapeHandles = (shp: Shape & { pointsMm?: { x: number; y: number }[] }): [number, number][] =>
     shp.pointsMm
       ? shp.pointsMm.map((p): [number, number] => [p.x, p.y])
-      : shp.kind === "line" || shp.kind === "arrow"
+      : shp.kind === "line" || shp.kind === "arrow" || shp.kind === "bracket"
       ? [
           [shp.x1, shp.y1],
           [shp.x2, shp.y2],
@@ -1953,7 +2262,7 @@ export function GraphView({ graph }: { graph: Graph }) {
           [shp.x2, shp.y2],
         ];
   const picking = rangePick && rangePick.graphId === graph.id ? rangePick : null;
-  const pickLayout = picking ? layout.layers.find((l) => l.layer.id === picking.layerId) : undefined;
+  const pickLayout = picking ? shownLayout.layers.find((l) => l.layer.id === picking.layerId) : undefined;
   const pickPointer = {
     onPointerDown: (e: React.PointerEvent) => {
       if (!picking) return;
@@ -1974,24 +2283,74 @@ export function GraphView({ graph }: { graph: Graph }) {
       picking.onPick(Math.min(a, b), Math.max(a, b));
     },
   };
+  // status bar: the gestures that apply to what is selected (the keys follow the user's shortcuts)
+  const gestureHint = (() => {
+    const alt = ALT_KEY;
+    const selLayerObj = "layerId" in selection ? graph.layers.find((l) => l.id === selection.layerId) : undefined;
+    const is3d = (l: Layer | undefined) => !!l?.view3d && !!l.axes.z;
+    const k = (id: string, text: string) => (keyHint(id) ? ` · ${keyHint(id)} ${text}` : "");
+    if (picking) return "Drag across the data area to choose the range";
+    if (selLayerObj?.hidden) return `${selLayerObj.name} is hidden · "Show" in the inspector brings it back`;
+    if (polyDraft || drawTool === "polyline" || drawTool === "polygon") return "Click to add points · Shift keeps a segment at 45° steps · double-click or Enter finishes · Esc cancels";
+    if (drawTool) return "Drag to draw · Shift gives a straight line, a square or a circle · Esc stops drawing";
+    if (multi.length && selection.kind === "plot") return `${multi.length + 1} curves selected: changes in the inspector apply to all of them${plotGroupOf(selection) ? "" : k("group", "groups them")}`;
+    if (multi.length) return `Drag or use the arrow keys to move them together${k("group", "groups them")}`;
+    switch (selection.kind) {
+      case "layer":
+        return is3d(selLayerObj) ? `${alt}-drag to turn the 3D view · drag to move · drag a corner to resize` : `${alt}-drag to zoom into an area · drag to move · drag a corner to resize, Shift keeps it square`;
+      case "plot":
+        return `Double-click its legend entry to rename it${k("fit", "fits a curve")}`;
+      case "axis":
+        return "Double-click the axis title on the figure to edit it";
+      case "text":
+        return "Double-click to edit · Shift-drag moves it level or upright · arrow keys nudge";
+      case "shape":
+        return selShape?.kind === "image" ? `Drag a corner to resize, ${alt} ignores the proportions · arrow keys nudge` : "Drag the handles to reshape · Shift keeps a move or a line end on a straight line · arrow keys nudge";
+      case "legend":
+        return "Drag to move, with Shift level or upright · double-click an entry to rename it";
+      case "colorScale":
+        return "Drag to move";
+      default:
+        return `${graph.layers.some(is3d) ? `${alt}-drag a 3D plot to turn it` : `${alt}-drag a plot to zoom into an area`} · hold L to pick a layer${k("shortcuts", "lists every shortcut")}`;
+    }
+  })();
   const sizeMm = frozenSize.current ?? { w: layout.widthMm, h: layout.heightMm };
   const widthPx = sizeMm.w * pxPerMm;
   const heightPx = sizeMm.h * pxPerMm;
+  // the part of the figure's content that lies outside the page, in mm: a pale sheet is laid under it and the
+  // scroll area grows to reach it (a 3D layer's box is padded generously, so only its frame counts while that is on the page)
+  const desk = (() => {
+    const boxes = layout.layers.map((ll) => {
+      const f = ll.layer.frame;
+      const frame = { x0: f.xMm, y0: f.yMm, x1: f.xMm + f.wMm, y1: f.yMm + f.hMm };
+      return ll.is3d && frame.x0 >= 0 && frame.y0 >= 0 && frame.x1 <= sizeMm.w && frame.y1 <= sizeMm.h ? frame : ll.bbox;
+    });
+    const x0 = Math.min(0, ...boxes.map((b) => b.x0));
+    const y0 = Math.min(0, ...boxes.map((b) => b.y0));
+    const x1 = Math.max(sizeMm.w, ...boxes.map((b) => b.x1));
+    const y1 = Math.max(sizeMm.h, ...boxes.map((b) => b.y1));
+    const over = { l: -x0, t: -y0, r: x1 - sizeMm.w, b: y1 - sizeMm.h };
+    const any = [over.l, over.t, over.r, over.b].some((v) => Number.isFinite(v) && v > 0.5);
+    if (!any) return null;
+    const m = 4; // margin of the sheet around the content, mm
+    const pad = (v: number) => (Number.isFinite(v) && v > 0.5 ? (v + m) * pxPerMm : 0);
+    return { l: pad(over.l), t: pad(over.t), r: pad(over.r), b: pad(over.b) };
+  })();
   const handle = 6 / pxPerMm; // handle size in mm so it stays 6px on screen
 
   return (
     <div className="graph-view">
       <div className="graph-toolbar">
-        <button className="icon-btn" title="Zoom out (⌘-)" onClick={() => setZoom((zoom || 1) / 1.25)}>
+        <button className="icon-btn" title={`Zoom out${keyHintSuffix("zoomOut")}`} onClick={() => setZoom((zoom || 1) / 1.25)}>
           <Icon name="zoomOut" />
         </button>
-        <span className="zoom-label" onClick={zoomFit} title="Fit (⌘0)">
+        <span className="zoom-label" onClick={zoomFit} title={`Fit to window${keyHintSuffix("zoomFit")}`}>
           {Math.round((zoom || 1) * 100)}%
         </span>
-        <button className="icon-btn" title="Zoom in (⌘+)" onClick={() => setZoom((zoom || 1) * 1.25)}>
+        <button className="icon-btn" title={`Zoom in${keyHintSuffix("zoomIn")}`} onClick={() => setZoom((zoom || 1) * 1.25)}>
           <Icon name="zoomIn" />
         </button>
-        <button className="icon-btn" title="Fit to window (⌘0)" onClick={zoomFit}>
+        <button className="icon-btn" title={`Fit to window${keyHintSuffix("zoomFit")}`} onClick={zoomFit}>
           <Icon name="zoomFit" />
         </button>
         <div className="toolbar-sep" />
@@ -2003,13 +2362,13 @@ export function GraphView({ graph }: { graph: Graph }) {
           title="Plot a function y = f(x)"
           onClick={() => {
             const sel = st.getState().ui.selection;
-            useDialogs.getState().setFunctionDialog({ graphId: graph.id, layerId: ("layerId" in sel ? sel.layerId : undefined) ?? graph.layers[0]?.id ?? "new" });
+            useDialogs.getState().setFunctionDialog({ graphId: graph.id, layerId: ("layerId" in sel ? sel.layerId : undefined) ?? defaultLayer(graph)?.id ?? "new" });
           }}
         >
           <Icon name="functionF" size={13} /> Function
         </button>
         <button
-          className={"btn small" + (drawTool ? " primary" : "")}
+          className={"btn small" + (drawTool ? " on" : "")}
           title="Draw a line, arrow, rectangle or ellipse (drag on the canvas; Esc cancels)"
           onClick={(e) => {
             const r = (e.currentTarget as HTMLElement).getBoundingClientRect();
@@ -2018,6 +2377,7 @@ export function GraphView({ graph }: { graph: Graph }) {
               { label: "Arrow", onSelect: () => setDrawTool("arrow") },
               { label: "Rectangle", onSelect: () => setDrawTool("rect") },
               { label: "Ellipse", onSelect: () => setDrawTool("ellipse") },
+              { label: "Bracket (for significance stars)", onSelect: () => setDrawTool("bracket") },
               { type: "sep" },
               { label: "Free-form (pen)", onSelect: () => setDrawTool("freehand") },
               { label: "Polyline (click points, double-click to finish)", onSelect: () => setDrawTool("polyline") },
@@ -2056,10 +2416,10 @@ export function GraphView({ graph }: { graph: Graph }) {
         )}
         <button
           className="btn small"
-          title="Fit a curve to the selected plot (⌘F)"
+          title={`Fit a curve to the selected plot${keyHintSuffix("fit")}`}
           onClick={() => {
             const sel = st.getState().ui.selection;
-            const layerId = ("layerId" in sel ? sel.layerId : undefined) ?? graph.layers[0]?.id;
+            const layerId = ("layerId" in sel ? sel.layerId : undefined) ?? defaultLayer(graph)?.id;
             if (layerId) useDialogs.getState().setFitDialog({ graphId: graph.id, layerId, plotId: sel.kind === "plot" ? sel.plotId : null });
           }}
         >
@@ -2067,67 +2427,70 @@ export function GraphView({ graph }: { graph: Graph }) {
         </button>
         <button
           className="btn small"
-          title="Import data (CSV, TSV, Excel) into a new sheet, or a picture (PNG, JPEG, SVG…) onto this graph. Pictures can also be pasted with ⌘V or dropped on the graph."
+          title={`Import data (CSV, TSV, Excel) into a new sheet, or a picture (PNG, JPEG, SVG…) onto this graph. Pictures can also be pasted with ${formatKeys("Mod+V")} or dropped on the graph.`}
           onClick={(e) => {
             const r = (e.currentTarget as HTMLElement).getBoundingClientRect();
             openMenu({ clientX: r.left, clientY: r.bottom + 2 }, [
-              { label: "Data (CSV, TSV, Excel)…", shortcut: "⌘I", onSelect: () => void importViaDialog() },
+              { label: "Data (CSV, TSV, Excel)…", shortcut: keyHint("import"), onSelect: () => void importViaDialog() },
               { label: "Image…", onSelect: () => void importImageHere() },
             ]);
           }}
         >
           <Icon name="import" size={13} /> Import
         </button>
-        {multi.length > 0 && (
-          <>
-            <div className="toolbar-sep" />
-            <span className="hint">{multi.length + 1} selected</span>
-            {(
-              [
-                ["alignLeft", "Align left edges", "left"],
-                ["alignCenterH", "Align horizontal centers", "hcenter"],
-                ["alignRight", "Align right edges", "right"],
-                ["alignTop", "Align top edges", "top"],
-                ["alignCenterV", "Align vertical centers", "vcenter"],
-                ["alignBottom", "Align bottom edges", "bottom"],
-              ] as const
-            ).map(([icon, title, op]) => (
-              <button key={op} className="icon-btn" title={title} onClick={() => alignSelected(op)}>
-                <Icon name={icon} size={15} />
-              </button>
-            ))}
-            <button className="icon-btn" title="Distribute horizontally (equal gaps)" disabled={multi.length < 2} onClick={() => alignSelected("distributeH")}>
-              <Icon name="distributeH" size={15} />
-            </button>
-            <button className="icon-btn" title="Distribute vertically (equal gaps)" disabled={multi.length < 2} onClick={() => alignSelected("distributeV")}>
-              <Icon name="distributeV" size={15} />
-            </button>
-            <button className="btn small" title="Give all selected layers the width and height of the first one" onClick={() => alignSelected("sameSize")}>
-              Same size
-            </button>
-            <div className="toolbar-sep" />
-            <input className="input" type="number" min={1} max={12} step={1} value={gridCols} onChange={(e) => setGridCols(Number(e.target.value) || 1)} style={{ width: 44 }} title="Columns of the grid" />
-            <span className="hint">×</span>
-            <input className="input" type="number" min={0} step={1} value={gridGap} onChange={(e) => setGridGap(Number(e.target.value) || 0)} style={{ width: 44 }} title="Gap between cells (mm)" />
-            <button className="btn small" title="Arrange the selection on a grid with this many columns and gap, starting at the selection's top-left corner" disabled={multi.length < 1} onClick={arrangeGrid}>
-              Grid
-            </button>
-            <div className="toolbar-sep" />
-            <button className="btn small" title="Group the selected objects: they select and move as one (⌘G)" onClick={groupSelection}>
-              Group
-            </button>
-            {groupMembersOf(selection) && (
-              <button className="btn small" title="Dissolve the group (⇧⌘G)" onClick={ungroupSelection}>
-                Ungroup
-              </button>
-            )}
-          </>
-        )}
-        <div className="spacer" />
-        <span className="hint status" title="Hold L to highlight the layers and pick a layer through anything drawn on top of it">
-          {layerMode ? "Layer mode: click layers to select them (clicks add up), drag a selected layer to move them all, Shift+click removes one" : `Canvas ${layout.widthMm} × ${layout.heightMm} mm${selLayer ? ` · ${selLayer.name}: ${selLayer.frame.wMm} × ${selLayer.frame.hMm} mm` : ""}`}
-        </span>
+        <button
+          className={"btn small" + (anim?.enabled ? " on" : "")}
+          title={anim?.enabled ? "Switch the animation of this figure off" : "Animate this figure: reveal the data over time, turn a 3D view, or let the plots appear one by one"}
+          onClick={() => toggleAnimationFromUi(graph.id)}
+        >
+          <Icon name="film" size={13} /> Animate
+        </button>
       </div>
+      {/* tools for a multi-selection: a second bar that lies over the top of the canvas, so the toolbar keeps its place and the figure does not jump */}
+      {multi.length > 0 && selection.kind !== "plot" && (
+        <div className="selection-bar">
+          <span className="hint">{multi.length + 1} selected</span>
+          {(
+            [
+              ["alignLeft", "Align left edges", "left"],
+              ["alignCenterH", "Align horizontal centers", "hcenter"],
+              ["alignRight", "Align right edges", "right"],
+              ["alignTop", "Align top edges", "top"],
+              ["alignCenterV", "Align vertical centers", "vcenter"],
+              ["alignBottom", "Align bottom edges", "bottom"],
+            ] as const
+          ).map(([icon, title, op]) => (
+            <button key={op} className="icon-btn" title={title} onClick={() => alignSelected(op)}>
+              <Icon name={icon} size={15} />
+            </button>
+          ))}
+          <button className="icon-btn" title="Distribute horizontally (equal gaps)" disabled={multi.length < 2} onClick={() => alignSelected("distributeH")}>
+            <Icon name="distributeH" size={15} />
+          </button>
+          <button className="icon-btn" title="Distribute vertically (equal gaps)" disabled={multi.length < 2} onClick={() => alignSelected("distributeV")}>
+            <Icon name="distributeV" size={15} />
+          </button>
+          <button className="btn small" title="Give all selected layers the width and height of the first one" onClick={() => alignSelected("sameSize")}>
+            Same size
+          </button>
+          <div className="toolbar-sep" />
+          <input className="input" type="number" min={1} max={12} step={1} value={gridCols} onChange={(e) => setGridCols(Number(e.target.value) || 1)} style={{ width: 44 }} title="Columns of the grid" />
+          <span className="hint">×</span>
+          <input className="input" type="number" min={0} step={1} value={gridGap} onChange={(e) => setGridGap(Number(e.target.value) || 0)} style={{ width: 44 }} title="Gap between cells (mm)" />
+          <button className="btn small" title="Arrange the selection on a grid with this many columns and gap, starting at the selection's top-left corner" disabled={multi.length < 1} onClick={arrangeGrid}>
+            Grid
+          </button>
+          <div className="toolbar-sep" />
+          <button className="btn small" title={`Group the selected objects: they select and move as one${keyHintSuffix("group")}`} onClick={groupSelection}>
+            Group
+          </button>
+          {groupMembersOf(selection) && (
+            <button className="btn small" title={`Dissolve the group${keyHintSuffix("ungroup")}`} onClick={ungroupSelection}>
+              Ungroup
+            </button>
+          )}
+        </div>
+      )}
       <Group orientation="vertical" style={{ flex: 1, minHeight: 0 }}>
       <Panel minSize={120}>
       <div
@@ -2137,17 +2500,25 @@ export function GraphView({ graph }: { graph: Graph }) {
         onPointerMove={onHover}
         onPointerLeave={() => setReader(null)}
         onPointerDown={(e) => {
-          if (e.target === e.currentTarget || (e.target as HTMLElement).classList.contains("graph-paper-wrap")) {
+          if (e.target === e.currentTarget || (e.target as HTMLElement).classList.contains("graph-paper-wrap") || (e.target as HTMLElement).classList.contains("graph-desk")) {
             st.getState().setSelection({ kind: "canvas", graphId: graph.id });
             closeEditor();
           }
         }}
         onContextMenu={contextMenu}
       >
-        <div className="graph-paper-wrap" style={{ minWidth: widthPx + 48, minHeight: heightPx + 48 }}>
+        <div
+          className="graph-paper-wrap"
+          style={{
+            minWidth: widthPx + 48 + (desk ? desk.l + desk.r : 0),
+            minHeight: heightPx + 48 + (desk ? desk.t + desk.b : 0),
+            ...(desk ? { paddingLeft: 24 + desk.l, paddingRight: 24 + desk.r, paddingTop: 24 + desk.t, paddingBottom: 24 + desk.b } : null),
+          }}
+        >
           <div className="graph-paper" style={{ width: widthPx, height: heightPx }}>
+            {desk && <div className="graph-desk" style={{ left: -desk.l, top: -desk.t, width: widthPx + desk.l + desk.r, height: heightPx + desk.t + desk.b }} />}
             <GraphSvg
-              layout={frozenSize.current ? { ...layout, widthMm: sizeMm.w, heightMm: sizeMm.h } : layout}
+              layout={frozenSize.current ? { ...shownLayout, widthMm: sizeMm.w, heightMm: sizeMm.h } : shownLayout}
               background
               svgRef={svgRef}
               widthCss={`${widthPx}px`}
@@ -2155,6 +2526,11 @@ export function GraphView({ graph }: { graph: Graph }) {
               interactive={interactive}
               style={SVG_STYLE}
             >
+              {/* outside the page everything is veiled in the color of the desk: there, but plainly not part of the export */}
+              <g className="ui-off-page" pointerEvents="none">
+                <path className="veil" fillRule="evenodd" d={`M-3000 -3000H${sizeMm.w + 3000}V${sizeMm.h + 3000}H-3000ZM0 0V${sizeMm.h}H${sizeMm.w}V0Z`} />
+                {desk && <rect className="edge" x={0} y={0} width={sizeMm.w} height={sizeMm.h} fill="none" strokeWidth={1 / pxPerMm} />}
+              </g>
               {selShape && cropShapeId === selShape.id && selShape.kind === "image" && (
                 <g className="ui-handles ui-crop" ref={shapeHandlesRef}>
                   <rect x={Math.min(selShape.x1, selShape.x2)} y={Math.min(selShape.y1, selShape.y2)} width={Math.abs(selShape.x2 - selShape.x1)} height={Math.abs(selShape.y2 - selShape.y1)} fill="none" stroke="#ff9500" strokeWidth={1.5 / pxPerMm} strokeDasharray="1 0.6" pointerEvents="none" />
@@ -2199,7 +2575,8 @@ export function GraphView({ graph }: { graph: Graph }) {
                   ))}
                 </g>
               )}
-              {selLayer && (
+              {/* a hidden layer can be selected from the figure's Layers list: nothing of it is on the canvas, so no handles */}
+              {selLayer && !selLayer.hidden && (
                 <g className="ui-handles" ref={layerHandlesRef}>
                   {(["nw", "ne", "sw", "se"] as const).map((c) => {
                     const x = c.includes("w") ? selLayer.frame.xMm : selLayer.frame.xMm + selLayer.frame.wMm;
@@ -2241,7 +2618,10 @@ export function GraphView({ graph }: { graph: Graph }) {
                 onPointerDown={startDraw}
                 onPointerMove={(e) => {
                   if (!polyDraft) return;
-                  const [mx, my] = toMm(e);
+                  let [mx, my] = toMm(e);
+                  // Shift: the segment being placed keeps to 45° steps from the last point
+                  const lastPt = polyDraft.points[polyDraft.points.length - 1];
+                  if (e.shiftKey && lastPt) [mx, my] = snapDirection(lastPt.x, lastPt.y, mx, my);
                   setPolyDraft((d) => (d ? { ...d, cursor: { x: mx, y: my } } : d));
                 }}
                 onDoubleClick={() => polyDraft && finishPoly(true)}
@@ -2263,7 +2643,7 @@ export function GraphView({ graph }: { graph: Graph }) {
                     ))}
                   </>
                 )}
-                {drawPreview && (drawPreview.tool === "line" || drawPreview.tool === "arrow") && (
+                {drawPreview && (drawPreview.tool === "line" || drawPreview.tool === "arrow" || drawPreview.tool === "bracket") && (
                   <line x1={drawPreview.x1} y1={drawPreview.y1} x2={drawPreview.x2} y2={drawPreview.y2} stroke="#007aff" strokeWidth={0.3} strokeDasharray="1 0.6" />
                 )}
                 {drawPreview && drawPreview.tool === "rect" && (
@@ -2329,6 +2709,31 @@ export function GraphView({ graph }: { graph: Graph }) {
                 }}
               />
             )}
+            {!zoomRect &&
+              layout.layers.map((ll) => {
+                const i = zoomStepIndex(graph.id, ll.layer);
+                if (i < 0) return null;
+                const f = ll.layer.frame;
+                const step = zoomSteps.get(`${graph.id}/${ll.layer.id}`)![i];
+                return (
+                  <button
+                    key={ll.layer.id}
+                    className="btn small zoom-undo"
+                    style={{ left: (f.xMm + f.wMm) * pxPerMm, top: f.yMm * pxPerMm }}
+                    title={`Back to the axis ranges from before this zoom${i > 0 ? ` (${i + 1} zooms to step back through)` : ""}. Rescale Axes to Data${keyHintSuffix("rescale")} fits them to the data instead.`}
+                    onPointerDown={(e) => e.stopPropagation()}
+                    onDoubleClick={(e) => e.stopPropagation()}
+                    onClick={() =>
+                      st.getState().updateLayer(graph.id, ll.layer.id, (l) => {
+                        Object.assign(l.axes.x, step.before.x);
+                        Object.assign(l.axes.y, step.before.y);
+                      })
+                    }
+                  >
+                    <Icon name="undo" size={11} /> Undo zoom
+                  </button>
+                );
+              })}
             {edit && (
               <textarea
                 ref={editInputRef}
@@ -2377,15 +2782,24 @@ export function GraphView({ graph }: { graph: Graph }) {
       {fitDialog && fitDialog.graphId === graph.id && (
         <>
           <Separator className="separator horizontal" />
-          <Panel defaultSize={230} minSize={120} maxSize={480}>
+          <Panel panelRef={fitPanelRef} defaultSize={260} minSize={120} maxSize={520}>
             <FitPanel key={fitDialog.layerId} graphId={fitDialog.graphId} layerId={fitDialog.layerId} plotId={fitDialog.plotId} />
           </Panel>
         </>
       )}
       </Group>
+      {anim?.enabled && <AnimationBar graph={graph} />}
+      <div className="statusbar">
+        <span>{layerMode ? "Layer mode: click layers to select them (clicks add up), drag a selected layer to move them all, Shift+click removes one" : `Canvas ${layout.widthMm} × ${layout.heightMm} mm${selLayer ? ` · ${selLayer.name}: ${selLayer.frame.wMm} × ${selLayer.frame.hMm} mm` : ""}`}</span>
+        {!layerMode && (
+          <span className="gesture-hint" title="What you can do with the mouse and keyboard here. Every shortcut and gesture is listed under Shortcuts and Gestures.">
+            {gestureHint}
+          </span>
+        )}
+      </div>
       {picking && (
         <div className="pick-banner">
-          Drag across the data area to choose the fit range
+          Drag across the data area to choose the {picking.what ?? "fit range"}
           <button className="btn small" onClick={() => useDialogs.getState().setRangePick(null)}>
             Cancel
           </button>

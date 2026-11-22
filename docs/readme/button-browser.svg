@@ -1,0 +1,31 @@
+<svg xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" width="262" height="48" viewBox="0 0 262 48" role="img" aria-label="Try it in your browser">
+<title>Try it in your browser</title>
+<style>
+  text { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif; }
+  .card { fill: #f6f6f7; stroke: #d6d6da; }
+  .box { fill: #ffffff; stroke: #d6d6da; }
+  .t { fill: #1b1b1d; }
+  .t2 { fill: #636368; }
+  .ink { stroke: #6d6d73; fill: none; }
+  .inkfill { fill: #6d6d73; }
+  .soft { fill: #ececee; stroke: #c9c9ce; }
+  .acc { fill: #2b6fd6; }
+  .ring { fill: none; stroke: #2b6fd6; }
+  .onacc { fill: #ffffff; }
+  .curve { stroke: #ffffff; }
+  @media (prefers-color-scheme: dark) {
+    .card { fill: #26272a; stroke: #3b3c41; }
+    .box { fill: #1e1f21; stroke: #3b3c41; }
+    .t { fill: #e9e9eb; }
+    .t2 { fill: #a2a3aa; }
+    .ink { stroke: #a2a3aa; }
+    .inkfill { fill: #a2a3aa; }
+    .soft { fill: #323337; stroke: #4a4b51; }
+    .acc { fill: #5b9df5; }
+    .ring { stroke: #5b9df5; }
+    .onacc { fill: #101113; }
+    .curve { stroke: #101113; }
+  }
+</style>
+<style>.pi { color: #1b1b1d; } @media (prefers-color-scheme: dark) { .pi { color: #e9e9eb; } }</style><rect class="box" x="1" y="1" width="260" height="46" rx="8" stroke-width="1.5"/><g transform="translate(30 24)" style="stroke:currentColor" class="pi"><path d="M-2 -7 H-7 V7 H7 V2 M1 -7 H7 V-1 M7 -7 L-1 1" fill="none" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"/></g><text class="t" x="144.0" y="30" font-size="17" font-weight="600" text-anchor="middle">Try it in your browser</text>
+</svg>

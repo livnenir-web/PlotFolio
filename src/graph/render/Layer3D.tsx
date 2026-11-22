@@ -5,7 +5,8 @@ import { frontEdges, mixColor } from "../projection3d";
 import { formatTick } from "../ticks";
 import { MarkupText } from "../textMarkup";
 import { fmtMm, ptToMm } from "../units";
-import { markerPath } from "./GraphSvg";
+import { animMarkerProps, markerPath } from "./GraphSvg";
+import { smoothPolyline3 } from "../paths";
 
 const HIT = "rgba(0,0,0,0)";
 
@@ -82,8 +83,20 @@ export function Layer3DG({ ll, graphId, sel, interactive, pd, dbl }: { ll: Layer
   const prims: { depth: number; node: React.ReactNode }[] = [];
   for (const plot of layer.plots) {
     if (!plot.visible) continue;
+    const first = prims.length;
     if (plot.type === "surface3d") collectSurface(ll, plot, unit, prims);
     else if (plot.type === "scatter3d") collectScatter(ll, plot, unit, prims);
+    // animation frames: a plot that fades in
+    const op = ll.anim?.plotOpacity.get(plot.id);
+    if (op !== undefined) for (let i = first; i < prims.length; i++) prims[i].node = <g opacity={op}>{prims[i].node}</g>;
+  }
+  // animation frames: the current point of each revealed plot, just in front of the point it sits on
+  if (ll.anim && ll.anim.style.marker.shape !== "none") {
+    const mp = animMarkerProps(ll.anim.style.marker);
+    for (const m of ll.anim.markers) {
+      if (m.depth === undefined) continue;
+      prims.push({ depth: m.depth - 1e-6, node: <path className="current-point" data-plot-id={m.plotId} d={markerPath(ll.anim.style.marker.shape, m.xMm, m.yMm, mp.r)} fill={mp.fill} stroke={mp.stroke} strokeWidth={mp.strokeWidth} /> });
+    }
   }
   prims.sort((a, b) => b.depth - a.depth);
 
@@ -225,18 +238,54 @@ function collectScatter(ll: LayerLayout, plot: Plot, unit: Unit, out: { depth: n
   const mapper = ll.colors.get(plot.id);
   const r = markerRadiusMm(plot);
   const hollow = !plot.marker.filled;
+  // animation frames only: an interpolated first / last point carries no symbol, and a tail may fade along the point order
+  const part = ll.anim?.partial.get(plot.id);
+  const fade = !!ll.anim?.fadeByOrder.has(plot.id);
+  const n = d.x.length;
+  const skip = part ? (i: number) => (part.head && i === 0) || (part.tail && i === n - 1) : null;
+  // line + symbol: the line between each pair of consecutive points (straight, or smoothed in 3D and sampled) is
+  // depth-sorted on its own so it passes behind nearer points and in front of farther ones; it sits just behind the
+  // symbols at the same depth. A point outside the axis range breaks the line.
+  if (plot.joinPoints) {
+    const lw = ptToMm(plot.line.widthPt);
+    const op = plot.line.opacity ?? 1;
+    const connect = plot.line.connect === "spline" || plot.line.connect === "bspline" ? plot.line.connect : "straight";
+    const runs: [number, number, number][][] = [[]];
+    for (let i = 0; i < d.x.length; i++) {
+      const u = unit.x(d.x[i]);
+      const v = unit.y(d.y[i]);
+      const w = unit.z(d.z[i]);
+      if (u === null || v === null || w === null) {
+        if (runs[runs.length - 1].length) runs.push([]);
+        continue;
+      }
+      runs[runs.length - 1].push([u, v, w]);
+    }
+    const pieces = runs.flatMap((run) => smoothPolyline3(run, connect, plot.line.smoothing ?? 1));
+    pieces.forEach((piece, pi) => {
+      const proj = piece.map((q) => P.project(q[0], q[1], q[2]));
+      const depth = proj.reduce((s, q) => s + q[2], 0) / proj.length + 1e-6;
+      const color = mapper && ll.zScale ? mapper(ll.zScale.invert(piece.reduce((s, q) => s + q[2], 0) / piece.length)) : plot.color;
+      const dd = proj.map((q, k) => `${k ? "L" : "M"}${fmtMm(q[0])} ${fmtMm(q[1])}`).join("");
+      const o = fade ? (op * (pi + 1)) / pieces.length : op;
+      out.push({ depth, node: <path d={dd} fill="none" stroke={color} strokeWidth={lw} strokeLinecap={fade ? "butt" : "round"} strokeLinejoin="round" strokeOpacity={o < 1 ? o : undefined} /> });
+    });
+  }
   for (let i = 0; i < d.x.length; i++) {
+    if (!plot.showMarkers) break;
+    if (skip?.(i)) continue;
     const u = unit.x(d.x[i]);
     const v = unit.y(d.y[i]);
     const w = unit.z(d.z[i]);
     if (u === null || v === null || w === null) continue;
     const [x, y, depth] = P.project(u, v, w);
     const color = mapper ? mapper(d.z[i]) : plot.color;
-    out.push({ depth, node: <path d={markerPath(plot.marker.shape, x, y, r)} fill={hollow ? "none" : color} stroke={hollow ? color : "none"} strokeWidth={hollow ? ptToMm(0.5) : 0} /> });
+    out.push({ depth, node: <path d={markerPath(plot.marker.shape, x, y, r)} fill={hollow ? "none" : color} stroke={hollow ? color : "none"} strokeWidth={hollow ? ptToMm(0.5) : 0} opacity={fade && n > 1 ? (i + 1) / n : undefined} /> });
   }
   // drop lines to the floor
   if (plot.showLine) {
     for (let i = 0; i < d.x.length; i++) {
+      if (skip?.(i)) continue;
       const u = unit.x(d.x[i]);
       const v = unit.y(d.y[i]);
       const w = unit.z(d.z[i]);

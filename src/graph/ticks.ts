@@ -102,8 +102,13 @@ export function logNiceDomain(min: number, max: number, base = 10): { from: numb
 
 function decimalsForStep(step: number): number {
   if (!(step > 0)) return 0;
-  const d = -Math.floor(Math.log10(step) + 1e-9);
-  return Math.max(0, Math.min(10, d));
+  const d = Math.max(0, Math.min(10, -Math.floor(Math.log10(step) + 1e-9)));
+  // a step such as 0.25 or 2.5 needs one or two more decimals, or its ticks would be printed rounded (0.3, 0.5, 0.8)
+  for (let extra = 0; extra <= 2 && d + extra <= 10; extra++) {
+    const scaled = step * Math.pow(10, d + extra);
+    if (Math.abs(scaled - Math.round(scaled)) < 1e-6 * Math.max(1, scaled)) return d + extra;
+  }
+  return d;
 }
 
 /**

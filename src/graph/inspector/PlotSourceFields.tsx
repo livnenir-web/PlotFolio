@@ -85,7 +85,7 @@ export function PlotSourceFields({
           />
         </Row>
       )}
-      {matrix && !xyz && <div className="hint">All Y columns of the sheet form the Z grid (rows = Y, columns = X). Adjust the block in the plot's inspector afterwards.</div>}
+      {matrix && !xyz && <div className="note" title="Adjust the block in the plot's inspector afterwards (Data ▸ Matrix data).">All Y columns of the sheet form the Z grid (rows = Y, columns = X).</div>}
       {(!matrix || xyz) && !isHist && (
         <Row label="X">
           <SelectField value={source.xColId ?? ""} options={[{ value: "", label: "Row index" }, ...cols]} onChange={(v) => onChange({ ...source, xColId: v || null })} />
@@ -132,7 +132,7 @@ export function AddPlotBlock({ graphId, layerId }: { graphId: string; layerId: s
     zColId: null,
   }));
   const [type, setType] = useState<PlotType>(() => (layer?.view3d ? "scatter3d" : "scatter"));
-  if (!first) return <div className="hint">No sheets with data yet. Import or type data first.</div>;
+  if (!first) return <div className="note">No sheets with data yet.</div>;
   const matrix = isMatrixType(type);
   const ready = matrix ? (source.matrix?.mode === "xyz" ? !!source.yColId && !!source.zColId : true) : type === "scatter3d" ? !!source.yColId && !!source.zColId : !!source.yColId;
   const add = () => {
@@ -149,7 +149,7 @@ export function AddPlotBlock({ graphId, layerId }: { graphId: string; layerId: s
   return (
     <>
       <PlotSourceFields source={source} onChange={setSource} showType type={type} onType={setType} />
-      {layer?.view3d && !(type === "surface3d" || type === "scatter3d") && <div className="hint">This is a 3D layer: choose a 3D surface or 3D scatter.</div>}
+      {layer?.view3d && !(type === "surface3d" || type === "scatter3d") && <div className="note">This is a 3D layer: choose a 3D surface or 3D scatter.</div>}
       <Row label="">
         <button className="btn small primary" disabled={!ready} onClick={add}>
           Add plot

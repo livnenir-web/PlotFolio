@@ -1,51 +1,91 @@
 :root {
-  --font: -apple-system, BlinkMacSystemFont, "SF Pro Text", "Helvetica Neue", Helvetica, Arial, sans-serif;
-  --mono: "SF Mono", Menlo, Monaco, monospace;
+  /* the system font of the Mac first, then the one of Windows (Segoe UI), which a Mac does not have */
+  --font: -apple-system, BlinkMacSystemFont, "SF Pro Text", "Segoe UI Variable Text", "Segoe UI", "Helvetica Neue", Helvetica, Arial, sans-serif;
+  --mono: "SF Mono", Menlo, Monaco, "Cascadia Mono", Consolas, monospace;
+  /* "Instrument" look: neutral surfaces, hairlines, small corners; the accent only marks the selection and the
+     one main button of a view. The accent itself comes from Settings ▸ Appearance (app/appearance.ts). */
   --bg: #ffffff;
-  --bg-2: #f5f5f7;
-  --bg-3: #ebebed;
-  --canvas-bg: #e6e6e8;
-  --sidebar-bg: rgba(240, 240, 242, 0.55);
-  --text: #1d1d1f;
-  --text-2: #6e6e73;
-  --text-3: #a8a8ad;
+  --bg-2: #f6f6f7;
+  --bg-3: #ececee;
+  --canvas-bg: #e8e8ea;
+  --sidebar-bg: #f6f6f7;
+  --text: #1b1b1d;
+  --text-2: #636368;
+  --text-3: #8c8c91;
   --border: rgba(0, 0, 0, 0.12);
-  --border-2: rgba(0, 0, 0, 0.07);
-  --accent: #007aff;
+  --border-2: rgba(0, 0, 0, 0.065);
+  --accent: var(--accent-l, #2b6fd6);
   --accent-text: #ffffff;
-  --accent-bg: rgba(0, 122, 255, 0.14);
-  --selection: rgba(0, 122, 255, 0.22);
-  --danger: #ff3b30;
+  --accent-bg: color-mix(in srgb, var(--accent) 13%, transparent);
+  --selection: color-mix(in srgb, var(--accent) 20%, transparent);
+  --danger: #d93025;
   --control-bg: #ffffff;
-  --control-border: rgba(0, 0, 0, 0.18);
-  --control-shadow: 0 0.5px 1.5px rgba(0, 0, 0, 0.12);
-  --hover: rgba(0, 0, 0, 0.05);
-  --radius: 6px;
+  --control-border: rgba(0, 0, 0, 0.17);
+  --control-shadow: none;
+  --hover: rgba(0, 0, 0, 0.045);
+  --shadow-pop: 0 8px 24px rgba(0, 0, 0, 0.14), 0 0 0 1px rgba(0, 0, 0, 0.04);
+  /* surfaces that float (menus, dialogs, previews), the outline of color swatches, the veil behind a dialog */
+  --pop-bg: #ffffff;
+  --swatch-border: rgba(0, 0, 0, 0.16);
+  --backdrop: rgba(0, 0, 0, 0.22);
+  --radius: 4px;
   --titlebar-h: 38px;
+  /* left padding of the toolbar row; the Mac app keeps room there for the window's traffic lights (below) */
+  --traffic-inset: 10px;
+  color-scheme: light;
+}
+/* data-shell is set in main.tsx: "mac" (the Mac app), "windows" (the Windows app) or "browser" */
+:root[data-shell="mac"] {
   --traffic-inset: 78px;
-  color-scheme: light dark;
 }
 
+/* dark: chosen in Settings ▸ Appearance, or the system's when the setting is "Auto" (two copies of one block) */
+:root[data-theme="dark"] {
+  --bg: #1e1f21;
+  --bg-2: #26272a;
+  --bg-3: #323337;
+  --canvas-bg: #121314;
+  --sidebar-bg: #222326;
+  --text: #e9e9eb;
+  --text-2: #a2a3aa;
+  --text-3: #7f8087;
+  --border: rgba(255, 255, 255, 0.11);
+  --border-2: rgba(255, 255, 255, 0.065);
+  --accent: var(--accent-d, #5b9df5);
+  --accent-text: #101113;
+  --danger: #ff5a4f;
+  --control-bg: #17181a;
+  --control-border: rgba(255, 255, 255, 0.16);
+  --hover: rgba(255, 255, 255, 0.06);
+  --shadow-pop: 0 10px 30px rgba(0, 0, 0, 0.55), 0 0 0 1px rgba(255, 255, 255, 0.07);
+  --pop-bg: #2a2b2f;
+  --swatch-border: rgba(255, 255, 255, 0.3);
+  --backdrop: rgba(0, 0, 0, 0.5);
+  color-scheme: dark;
+}
 @media (prefers-color-scheme: dark) {
-  :root {
-    --bg: #1e1e1e;
-    --bg-2: #262628;
-    --bg-3: #2f2f31;
-    --canvas-bg: #171718;
-    --sidebar-bg: rgba(38, 38, 40, 0.55);
-    --text: #f5f5f7;
-    --text-2: #a1a1a6;
-    --text-3: #6b6b70;
-    --border: rgba(255, 255, 255, 0.13);
-    --border-2: rgba(255, 255, 255, 0.07);
-    --accent: #0a84ff;
-    --accent-bg: rgba(10, 132, 255, 0.22);
-    --selection: rgba(10, 132, 255, 0.3);
-    --danger: #ff453a;
-    --control-bg: #3a3a3c;
+  :root:not([data-theme="light"]) {
+    --bg: #1e1f21;
+    --bg-2: #26272a;
+    --bg-3: #323337;
+    --canvas-bg: #121314;
+    --sidebar-bg: #222326;
+    --text: #e9e9eb;
+    --text-2: #a2a3aa;
+    --text-3: #7f8087;
+    --border: rgba(255, 255, 255, 0.11);
+    --border-2: rgba(255, 255, 255, 0.065);
+    --accent: var(--accent-d, #5b9df5);
+    --accent-text: #101113;
+    --danger: #ff5a4f;
+    --control-bg: #17181a;
     --control-border: rgba(255, 255, 255, 0.16);
-    --control-shadow: 0 0.5px 1.5px rgba(0, 0, 0, 0.4);
-    --hover: rgba(255, 255, 255, 0.07);
+    --hover: rgba(255, 255, 255, 0.06);
+    --shadow-pop: 0 10px 30px rgba(0, 0, 0, 0.55), 0 0 0 1px rgba(255, 255, 255, 0.07);
+    --pop-bg: #2a2b2f;
+    --swatch-border: rgba(255, 255, 255, 0.3);
+    --backdrop: rgba(0, 0, 0, 0.5);
+    color-scheme: dark;
   }
 }
 
@@ -133,8 +173,6 @@ button {
   font-size: 11px;
   font-weight: 600;
   color: var(--text-2);
-  text-transform: uppercase;
-  letter-spacing: 0.02em;
   display: flex;
   align-items: center;
   justify-content: space-between;
@@ -149,9 +187,9 @@ button {
   display: flex;
   align-items: center;
   gap: 7px;
-  margin: 1px 8px;
-  padding: 4px 8px;
-  border-radius: 5px;
+  margin: 0 6px;
+  padding: 3px 8px;
+  border-radius: 3px;
   color: var(--text);
   white-space: nowrap;
   overflow: hidden;
@@ -160,7 +198,8 @@ button {
   background: var(--hover);
 }
 .sidebar .item.active {
-  background: var(--selection);
+  background: var(--bg-3);
+  box-shadow: inset 2px 0 0 var(--accent);
 }
 .sidebar .item .name {
   overflow: hidden;
@@ -216,9 +255,9 @@ button {
   position: absolute;
   left: 0;
   right: 0;
-  bottom: -1px;
-  height: 1px;
-  background: var(--bg);
+  top: 0;
+  height: 1.5px;
+  background: var(--accent);
 }
 .tab .name {
   overflow: hidden;
@@ -300,12 +339,20 @@ button {
   margin: 4px 0;
   min-height: 22px;
 }
+/* a long label continues on a second line instead of being cut off */
 .row > label {
   color: var(--text-2);
   font-size: 11.5px;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
+  line-height: 1.2;
+  overflow-wrap: break-word;
+}
+/* sliders give way before anything is pushed off the panel */
+.row input[type="range"] {
+  min-width: 30px;
+}
+/* a field that was given a width keeps it; the flexible controls beside it take up the slack */
+.row .input[style*="width"] {
+  flex: none;
 }
 .row .pair {
   display: flex;
@@ -323,7 +370,7 @@ textarea.input {
   height: 22px;
   padding: 0 6px;
   border: 1px solid var(--control-border);
-  border-radius: 5px;
+  border-radius: 3px;
   background: var(--control-bg);
   box-shadow: var(--control-shadow);
   outline: none;
@@ -335,7 +382,7 @@ textarea.input {
 input.input:focus,
 select.input:focus {
   border-color: var(--accent);
-  box-shadow: 0 0 0 3px var(--accent-bg);
+  box-shadow: 0 0 0 2px var(--accent-bg);
 }
 input.input[type="number"] {
   -moz-appearance: textfield;
@@ -369,7 +416,7 @@ textarea.input {
 .seg {
   display: inline-flex;
   border: 1px solid var(--control-border);
-  border-radius: 5px;
+  border-radius: 3px;
   overflow: hidden;
   background: var(--control-bg);
   box-shadow: var(--control-shadow);
@@ -390,15 +437,16 @@ textarea.input {
   border-right: 0;
 }
 .seg button.on {
-  background: var(--accent);
-  color: #fff;
+  background: var(--bg-3);
+  font-weight: 600;
+  box-shadow: inset 0 -1.5px 0 var(--accent);
 }
 
 .btn {
   height: 24px;
   padding: 0 10px;
   border: 1px solid var(--control-border);
-  border-radius: 6px;
+  border-radius: 4px;
   background: var(--control-bg);
   box-shadow: var(--control-shadow);
   display: inline-flex;
@@ -417,7 +465,7 @@ textarea.input {
 .btn.primary {
   background: var(--accent);
   border-color: var(--accent);
-  color: #fff;
+  color: var(--accent-text);
 }
 .btn.primary:hover {
   filter: brightness(1.08);
@@ -436,7 +484,7 @@ textarea.input {
   width: 28px;
   height: 24px;
   border: 0;
-  border-radius: 6px;
+  border-radius: 4px;
   background: transparent;
   color: var(--text-2);
   display: inline-flex;
@@ -505,22 +553,22 @@ textarea.input {
   padding: 4px;
   background: var(--control-bg);
   border: 1px solid var(--border);
-  border-radius: 8px;
-  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.18), 0 1px 3px rgba(0, 0, 0, 0.1);
-  font-size: 13px;
+  border-radius: 4px;
+  box-shadow: var(--shadow-pop);
+  font-size: 12.5px;
 }
 .menu .mi {
   padding: 4px 22px 4px 10px;
-  border-radius: 5px;
+  border-radius: 3px;
   display: flex;
   align-items: center;
   justify-content: space-between;
   gap: 16px;
   white-space: nowrap;
 }
-.menu .mi:hover {
-  background: var(--accent);
-  color: #fff;
+.menu .mi:hover,
+.menu .mi.active {
+  background: var(--bg-3);
 }
 .menu .mi.disabled {
   color: var(--text-3);
@@ -529,9 +577,6 @@ textarea.input {
 .menu .mi .sc {
   color: var(--text-3);
   font-size: 11px;
-}
-.menu .mi:hover .sc {
-  color: rgba(255, 255, 255, 0.8);
 }
 .menu .mi.checked::before {
   content: "✓";
@@ -562,7 +607,7 @@ textarea.input {
 .modal {
   background: var(--bg);
   border: 1px solid var(--border);
-  border-radius: 12px;
+  border-radius: 6px;
   box-shadow: 0 20px 60px rgba(0, 0, 0, 0.3);
   min-width: 420px;
   max-width: 90vw;
@@ -686,9 +731,11 @@ kbd {
   color: var(--text-3);
 }
 
+/* explanations and units: small, but in the secondary text color so they stay readable */
 .hint {
-  color: var(--text-3);
+  color: var(--text-2);
   font-size: 11px;
+  line-height: 1.4;
   margin: 4px 0;
 }
 
@@ -700,7 +747,7 @@ kbd {
   background: var(--text);
   color: var(--bg);
   padding: 8px 14px;
-  border-radius: 8px;
+  border-radius: 4px;
   font-size: 12.5px;
   box-shadow: 0 6px 20px rgba(0, 0, 0, 0.25);
   z-index: 2000;
@@ -713,6 +760,23 @@ kbd {
   flex-direction: column;
   height: 100%;
   min-height: 0;
+  position: relative;
+}
+/* tools for a multi-selection: laid over the top of the canvas (under the 34 px toolbar) and free to wrap */
+.selection-bar {
+  position: absolute;
+  top: 34px;
+  left: 0;
+  right: 0;
+  z-index: 15;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px;
+  padding: 4px 8px;
+  background: var(--bg-2);
+  border-bottom: 1px solid var(--border);
+  box-shadow: 0 2px 6px rgba(0, 0, 0, 0.08);
 }
 .graph-toolbar {
   display: flex;
@@ -725,7 +789,16 @@ kbd {
   /* a fixed, single-line toolbar: its height must never change with the selection, or the canvas below would jump */
   flex-wrap: nowrap;
   height: 34px;
-  overflow: hidden;
+  /* in a narrow window the row scrolls sideways (trackpad, or Shift + wheel) instead of hiding its last buttons */
+  overflow-x: auto;
+  overflow-y: hidden;
+  scrollbar-width: none;
+}
+.graph-toolbar::-webkit-scrollbar {
+  display: none;
+}
+.graph-toolbar > * {
+  flex: none;
 }
 .graph-toolbar .status {
   white-space: nowrap;
@@ -799,7 +872,7 @@ kbd {
   align-items: center;
   gap: 6px;
   padding: 3px 6px;
-  border-radius: 5px;
+  border-radius: 3px;
   margin: 1px -6px;
   cursor: default;
 }
@@ -811,7 +884,189 @@ kbd {
   height: 10px;
   border-radius: 2px;
   flex: none;
-  border: 1px solid rgba(0, 0, 0, 0.15);
+  border: 1px solid var(--swatch-border);
+}
+
+/* timeline of an animated figure, under the canvas */
+.anim-bar {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 0 10px;
+  height: 36px;
+  flex: none;
+  border-top: 1px solid var(--border);
+  background: var(--bg-2);
+}
+.anim-bar .anim-play {
+  color: var(--accent);
+}
+.anim-bar .anim-scrub {
+  flex: 1;
+  min-width: 80px;
+  accent-color: var(--accent);
+}
+.anim-bar .anim-time {
+  font-variant-numeric: tabular-nums;
+  font-size: 11px;
+  color: var(--text-2);
+  white-space: nowrap;
+  min-width: 190px;
+  text-align: right;
+}
+/* the Shortcuts and gestures sheet */
+.shortcut-list {
+  max-height: 56vh;
+  overflow: auto;
+  margin: 0 -6px;
+  padding: 0 6px;
+}
+.shortcut-list h4 {
+  margin: 12px 0 4px;
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--text-2);
+}
+.shortcut-list section:first-child h4 {
+  margin-top: 2px;
+}
+.shortcut-row {
+  border-bottom: 1px solid var(--border-2);
+}
+.shortcut-line {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-height: 28px;
+}
+.shortcut-label {
+  flex: 1;
+  min-width: 0;
+  font-size: 12.5px;
+}
+.keycap {
+  min-width: 64px;
+  height: 22px;
+  padding: 0 8px;
+  border: 1px solid var(--control-border);
+  border-radius: 3px;
+  background: var(--control-bg);
+  box-shadow: var(--control-shadow);
+  font-family: var(--font);
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
+  color: var(--text);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  white-space: nowrap;
+}
+button.keycap:hover {
+  border-color: var(--accent);
+}
+.keycap.none {
+  color: var(--text-3);
+}
+.keycap.mine {
+  border-color: var(--accent);
+  color: var(--accent);
+}
+.keycap.capturing {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 3px var(--accent-bg);
+  color: var(--accent);
+}
+.keycap.fixed {
+  background: transparent;
+  box-shadow: none;
+  border-color: var(--border-2);
+  color: var(--text-2);
+}
+.shortcut-note {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 6px;
+  padding: 0 0 6px;
+  font-size: 11.5px;
+  color: var(--danger);
+}
+.shortcut-note > span {
+  flex: 1;
+  min-width: 180px;
+}
+.shortcut-note .btn {
+  color: var(--text);
+}
+.gesture-row {
+  display: grid;
+  grid-template-columns: 210px 1fr;
+  gap: 10px;
+  padding: 5px 0;
+  border-bottom: 1px solid var(--border-2);
+  font-size: 12.5px;
+}
+.gesture-how {
+  font-weight: 600;
+}
+/* hint for the selected object, at the right of a status bar */
+.statusbar .gesture-hint {
+  margin-left: auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.statusbar > span:first-child {
+  flex: none;
+}
+
+/* progress of an animation export */
+.anim-progress {
+  position: relative;
+  height: 18px;
+  margin-top: 10px;
+  border-radius: 3px;
+  background: var(--bg-2);
+  border: 1px solid var(--border);
+  overflow: hidden;
+}
+.anim-progress > div {
+  height: 100%;
+  background: var(--accent-bg);
+  border-right: 2px solid var(--accent);
+}
+.anim-progress > span {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+  color: var(--text-2);
+}
+/* Animation tab of the figure inspector: the main switch, an effect's own switch, "on" next to a section's title */
+.anim-master {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding-top: 6px;
+  font-weight: 600;
+}
+.anim-check {
+  margin: 0 0 6px;
+}
+.anim-state {
+  margin-left: 6px;
+  font-size: 10.5px;
+  font-weight: 500;
+  color: var(--accent);
+}
+.btn.on {
+  background: var(--accent-bg);
+  border-color: var(--accent);
+  color: var(--accent);
 }
 
 .pick-banner {
@@ -820,9 +1075,9 @@ kbd {
   left: 50%;
   transform: translateX(-50%);
   background: var(--accent);
-  color: #fff;
+  color: var(--accent-text);
   padding: 6px 12px;
-  border-radius: 8px;
+  border-radius: 4px;
   font-size: 12px;
   display: flex;
   gap: 10px;
@@ -843,7 +1098,7 @@ kbd {
 .sidebar .item.drop,
 .sidebar.drop-root {
   box-shadow: inset 0 0 0 2px var(--accent);
-  border-radius: 5px;
+  border-radius: 3px;
 }
 .sidebar.drop-root {
   border-radius: 0;
@@ -882,13 +1137,23 @@ kbd {
   bottom: -3px;
   cursor: row-resize;
 }
+/* on the plot after an ⌥-drag zoom: sits in the frame's top right corner, not part of the figure */
+.zoom-undo {
+  position: absolute;
+  z-index: 14;
+  transform: translate(calc(-100% - 4px), 4px);
+  opacity: 0.92;
+}
+.zoom-undo:hover {
+  opacity: 1;
+}
 .reader-tip {
   position: absolute;
   pointer-events: none;
   background: rgba(30, 30, 30, 0.92);
   color: #fff;
   padding: 3px 7px;
-  border-radius: 5px;
+  border-radius: 3px;
   font-size: 11px;
   font-variant-numeric: tabular-nums;
   white-space: nowrap;
@@ -910,9 +1175,6 @@ kbd {
 .menu .mi .menu .mi {
   color: var(--text);
 }
-.menu .mi .menu .mi:hover {
-  color: #fff;
-}
 
 /* pointer-based drag in the sidebar */
 .drag-ghost {
@@ -921,7 +1183,7 @@ kbd {
   pointer-events: none;
   background: var(--control-bg);
   border: 1px solid var(--border);
-  border-radius: 6px;
+  border-radius: 4px;
   padding: 3px 8px;
   font-size: 12px;
   box-shadow: 0 4px 14px rgba(0, 0, 0, 0.2);
@@ -985,7 +1247,7 @@ input[type="range"] {
   white-space: pre-wrap;
   background: var(--bg-2);
   border: 1px solid var(--border-2);
-  border-radius: 8px;
+  border-radius: 4px;
   padding: 10px 12px;
   max-height: 55vh;
   overflow: auto;
@@ -1016,7 +1278,7 @@ input[type="range"] {
   color: var(--text);
 }
 
-/* in-page menu bar (browser build only; the Mac app uses the system menu bar) */
+/* in-page menu bar (the Windows app and the browser build; the Mac app uses the system menu bar) */
 .menubar {
   display: flex;
   align-items: center;
@@ -1040,7 +1302,7 @@ input[type="range"] {
   color: var(--text);
   background: none;
   border: 0;
-  border-radius: 5px;
+  border-radius: 3px;
   padding: 3px 8px;
   cursor: default;
   white-space: nowrap;
@@ -1076,4 +1338,748 @@ input[type="range"] {
   .titlebar .undo-group + .toolbar-sep {
     display: none;
   }
+}
+
+/* ---- start screen (an empty project) ---- */
+.start {
+  flex: 1;
+  min-height: 0;
+  overflow: auto;
+  display: flex;
+  justify-content: center;
+  background: var(--bg);
+}
+.start-inner {
+  width: min(720px, 100%);
+  padding: 44px 28px 32px;
+}
+.start-title {
+  font-size: 22px;
+  font-weight: 600;
+  letter-spacing: -0.01em;
+}
+.start-sub {
+  color: var(--text-2);
+  font-size: 13px;
+  margin: 4px 0 20px;
+}
+.start-tiles {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(140px, 1fr));
+  gap: 10px;
+}
+.start-tile,
+.start-sample {
+  border: 1px solid var(--border);
+  border-radius: 5px;
+  background: var(--bg);
+  color: var(--text);
+  font: inherit;
+  cursor: default;
+  transition: background 0.12s, border-color 0.12s;
+}
+.start-tile {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 8px;
+  padding: 18px 8px 14px;
+  font-size: 13px;
+}
+.start-tile svg {
+  color: var(--accent);
+}
+.start-tile:hover,
+.start-sample:hover {
+  background: var(--accent-bg);
+  border-color: var(--accent);
+}
+.start-tile:focus-visible,
+.start-sample:focus-visible,
+.start-recent:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
+}
+.start-lists {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1.4fr);
+  gap: 28px;
+  margin-top: 28px;
+}
+.start-lists.single {
+  grid-template-columns: minmax(0, 1fr);
+}
+.start-label {
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--text-2);
+  margin-bottom: 8px;
+}
+.start-recent {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+  width: 100%;
+  padding: 6px 8px;
+  border: 0;
+  border-radius: 4px;
+  background: none;
+  color: var(--text);
+  font: inherit;
+  font-size: 13px;
+  text-align: left;
+  cursor: default;
+}
+.start-recent:hover {
+  background: var(--hover);
+}
+.start-recent .name,
+.start-recent .where {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.start-recent .where {
+  color: var(--text-3);
+  flex: none;
+  max-width: 45%;
+}
+.start-samples {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(150px, 1fr));
+  gap: 10px;
+}
+.start-sample {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 8px;
+  font-size: 12px;
+  text-align: left;
+}
+.start-sample .thumb {
+  height: 96px;
+  border-radius: 4px;
+  background: #ffffff;
+  color: #b0b0b5;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  overflow: hidden;
+  pointer-events: none;
+}
+.start-sample .thumb svg {
+  max-width: 100%;
+  max-height: 100%;
+}
+
+/* ---- Plot Columns: gallery of plot kinds with a preview ---- */
+.plot-dialog {
+  display: grid;
+  grid-template-columns: 420px minmax(0, 1fr);
+  gap: 20px;
+}
+.gallery-label {
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--text-2);
+  margin: 0 0 5px;
+}
+.gallery-tiles {
+  display: grid;
+  grid-template-columns: repeat(5, minmax(0, 1fr));
+  gap: 6px;
+  margin-bottom: 12px;
+}
+.gallery-tile {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 3px;
+  padding: 8px 2px 6px;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  background: var(--bg);
+  color: var(--text-2);
+  font: inherit;
+  font-size: 11.5px;
+  cursor: default;
+}
+.gallery-tile span {
+  color: var(--text);
+  white-space: nowrap;
+}
+.gallery-tile:hover {
+  background: var(--hover);
+}
+.gallery-tile.on {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 1px var(--accent);
+  background: var(--accent-bg);
+  color: var(--accent);
+}
+.gallery-tile:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
+}
+.plot-preview {
+  height: 210px;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  background: #ffffff;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  overflow: hidden;
+  margin-bottom: 10px;
+  pointer-events: none;
+}
+.plot-preview svg {
+  max-width: 100%;
+  max-height: 100%;
+}
+
+/* curve groups in the Plots list of a layer */
+.plot-group {
+  margin: 2px -6px;
+  padding: 0 6px;
+  border-left: 2px solid var(--border);
+}
+.list-item.group-head {
+  gap: 4px;
+}
+.list-item.in-group {
+  padding-left: 22px;
+}
+.list-item.marked {
+  background: var(--bg-3);
+  box-shadow: inset 2px 0 0 var(--accent);
+}
+.group-strip {
+  display: inline-flex;
+  flex: none;
+  border-radius: 2px;
+  overflow: hidden;
+  border: 1px solid var(--swatch-border);
+}
+.group-strip span {
+  width: 5px;
+  height: 10px;
+}
+.group-strip.wide {
+  flex: 1;
+  min-width: 0;
+}
+.group-strip.wide span {
+  flex: 1;
+  width: auto;
+  height: 12px;
+}
+.note.group-note {
+  margin: 0;
+  padding: 6px 12px 0;
+}
+/* plots of an animated figure, by layer and group */
+.anim-tree {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  min-width: 0;
+  flex: 1;
+}
+.anim-tree .node {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  min-width: 0;
+  min-height: 20px;
+}
+.anim-tree .hint {
+  margin: 0;
+  flex: none;
+}
+.anim-tree .btn.small {
+  flex: none;
+}
+.anim-label {
+  color: var(--text-2);
+  font-size: 11.5px;
+  margin: 6px 0 2px;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+.anim-tree .node > .name {
+  flex: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.anim-tree .node.top > .name {
+  font-weight: 600;
+}
+.anim-tree .kids {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  margin-left: 9px;
+  padding-left: 8px;
+  border-left: 1px solid var(--border);
+}
+
+/* Settings: section heads and the accent swatches */
+.settings-head {
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--text-2);
+  padding: 8px 0 4px;
+  margin-bottom: 4px;
+  border-bottom: 1px solid var(--border-2);
+}
+.accent-swatches {
+  display: flex;
+  gap: 6px;
+}
+.accent-swatch {
+  width: 16px;
+  height: 16px;
+  border-radius: 50%;
+  border: 0;
+  padding: 0;
+  cursor: default;
+}
+.accent-swatch.on {
+  box-shadow: 0 0 0 2px var(--bg), 0 0 0 3.5px var(--text-2);
+}
+
+/* ---------- hover explanations ---------- */
+.tip {
+  position: fixed;
+  z-index: 3000;
+  transform: translateX(-50%);
+  max-width: 280px;
+  padding: 5px 8px;
+  border-radius: 4px;
+  background: var(--text);
+  color: var(--bg);
+  font-size: 11.5px;
+  line-height: 1.4;
+  pointer-events: none;
+  white-space: pre-line;
+  box-shadow: 0 4px 14px rgba(0, 0, 0, 0.22);
+}
+.tip.above {
+  transform: translate(-50%, -100%);
+}
+/* the small "i" behind which a section keeps its explanation */
+.info-mark {
+  flex: none;
+  width: 13px;
+  height: 13px;
+  border-radius: 50%;
+  border: 1px solid var(--text-3);
+  color: var(--text-3);
+  font-size: 9px;
+  font-weight: 600;
+  font-style: normal;
+  line-height: 11px;
+  text-align: center;
+  cursor: default;
+  user-select: none;
+  -webkit-user-select: none;
+}
+.info-mark:hover {
+  border-color: var(--text);
+  color: var(--text);
+}
+
+/* ---------- inspector, "Instrument" look ---------- */
+.inspector {
+  background: var(--bg);
+  font-variant-numeric: tabular-nums;
+}
+.inspector .head {
+  padding: 10px 12px 2px;
+  font-size: 13px;
+}
+.inspector .head svg {
+  color: var(--text-2);
+}
+.crumbs {
+  padding: 0 12px 8px;
+  border-bottom: 1px solid var(--border-2);
+}
+/* tabs of a panel: text with a thin accent line under the one showing */
+.panel-tabs {
+  display: flex;
+  padding: 0 12px;
+  gap: 14px;
+  border-bottom: 1px solid var(--border);
+}
+.panel-tabs button {
+  border: 0;
+  background: transparent;
+  padding: 7px 0 6px;
+  font-size: 12px;
+  color: var(--text-2);
+}
+.panel-tabs button:hover {
+  color: var(--text);
+}
+.panel-tabs button.on {
+  color: var(--text);
+  font-weight: 600;
+  box-shadow: inset 0 -1.5px 0 var(--accent);
+}
+/* sections: a quiet title on a hairline, no blocks */
+.inspector .group {
+  border-bottom: 0;
+}
+.inspector .group.collapsible .group-title {
+  border-bottom: 1px solid var(--border-2);
+  padding: 6px 12px;
+  font-weight: 500;
+}
+.inspector .group.collapsible .group-title:hover {
+  background: var(--hover);
+}
+.inspector .group.collapsible.open .group-title {
+  font-weight: 600;
+  margin-bottom: 6px;
+}
+.inspector .group.collapsible.open {
+  padding-bottom: 8px;
+}
+/* the only section of a tab: always open, so its title is no button (and is left out when it repeats the tab) */
+.inspector .group.solo .group-title:hover {
+  background: transparent;
+}
+.inspector .group.solo.bare {
+  padding-top: 10px;
+}
+.inspector .list-item {
+  border-radius: 3px;
+}
+/* a state worth seeing (several objects edited at once, nothing to show): one quiet line */
+.note {
+  color: var(--text-2);
+  font-size: 11px;
+  line-height: 1.4;
+  margin: 4px 0;
+}
+/* a hidden layer (or something in it) is being edited */
+.note.hidden-note {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin: 0;
+  padding: 6px 12px;
+  border-bottom: 1px solid var(--border-2);
+}
+.note.hidden-note span {
+  flex: 1;
+}
+
+/* ---------- project manager, tabs and toolbars: "Instrument" look ---------- */
+.sidebar .section {
+  padding: 6px 8px 4px 14px;
+  font-weight: 500;
+  color: var(--text-3);
+}
+.sidebar .section button {
+  opacity: 1;
+}
+.sidebar .item {
+  min-height: 24px;
+  border-radius: 3px;
+  gap: 7px;
+}
+.sidebar .item.folder .name {
+  color: var(--text);
+}
+.sidebar-filter {
+  padding: 0 8px 6px;
+}
+.graph-peek {
+  position: fixed;
+  z-index: 2500;
+  padding: 6px;
+  background: var(--control-bg);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  box-shadow: var(--shadow-pop);
+  pointer-events: none;
+}
+.graph-peek .paper {
+  border: 1px solid var(--border-2);
+  overflow: hidden;
+}
+.graph-peek .paper svg {
+  display: block;
+}
+.graph-peek .cap {
+  margin-top: 5px;
+  font-size: 11px;
+  color: var(--text-2);
+  max-width: 240px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+/* toggles that are on: neutral, like a pressed key */
+.icon-btn.on {
+  background: var(--bg-3);
+  color: var(--text);
+}
+.btn.on {
+  background: var(--bg-3);
+  border-color: var(--control-border);
+  color: var(--text);
+  box-shadow: inset 0 -1.5px 0 var(--accent);
+}
+/* toolbars: buttons without a frame until the pointer is on them; the one main button stays filled */
+.graph-toolbar .btn:not(.primary):not(.on),
+.formulabar .btn:not(.primary):not(.on),
+.titlebar .btn:not(.primary):not(.on),
+.selection-bar .btn:not(.primary):not(.on) {
+  border-color: transparent;
+  background: transparent;
+  color: var(--text);
+}
+.graph-toolbar .btn:not(.primary):not(.on):hover,
+.formulabar .btn:not(.primary):not(.on):hover,
+.titlebar .btn:not(.primary):not(.on):hover,
+.selection-bar .btn:not(.primary):not(.on):hover {
+  background: var(--hover);
+}
+.graph-toolbar .btn svg,
+.formulabar .btn:not(.primary) svg {
+  color: var(--text-2);
+}
+.graph-toolbar .btn.primary svg {
+  color: inherit;
+}
+.titlebar,
+.tabbar,
+.graph-toolbar,
+.formulabar,
+.statusbar,
+.anim-bar {
+  background: var(--bg-2);
+}
+.tabbar {
+  height: 30px;
+}
+.tab {
+  font-size: 12px;
+}
+.tab.active {
+  font-weight: 500;
+}
+.statusbar {
+  font-variant-numeric: tabular-nums;
+}
+
+/* ---------- dialogs, menus, start screen and gallery: "Instrument" look ---------- */
+.modal-backdrop {
+  background: rgba(0, 0, 0, 0.22);
+}
+.modal {
+  border-radius: 6px;
+  box-shadow: 0 16px 48px rgba(0, 0, 0, 0.24), 0 0 0 1px rgba(0, 0, 0, 0.05);
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
+}
+.modal .modal-title {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 11px 16px 10px;
+  font-size: 13px;
+  border-bottom: 1px solid var(--border-2);
+}
+.modal .modal-body {
+  padding: 12px 16px 14px;
+}
+.modal .modal-actions {
+  padding: 10px 16px;
+  background: var(--bg-2);
+  border-top: 1px solid var(--border-2);
+}
+/* sections in a dialog: a quiet title on a hairline, as in the inspector */
+.modal .group {
+  margin-bottom: 8px;
+}
+.modal .group-title {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--text-2);
+  padding: 4px 0;
+  margin-bottom: 6px;
+  border-bottom: 1px solid var(--border-2);
+}
+.fit-panel {
+  background: var(--bg);
+}
+.fit-panel .panel-head {
+  background: var(--bg-2);
+  font-size: 12px;
+}
+.menu {
+  border-radius: 5px;
+  padding: 3px;
+}
+.menu .mi {
+  border-radius: 3px;
+  padding: 3px 20px 3px 10px;
+}
+.toast {
+  border-radius: 4px;
+  font-size: 12px;
+}
+/* start screen: the same quiet tiles; the accent only answers the pointer */
+.start-title {
+  font-size: 20px;
+}
+.start-tile,
+.start-sample {
+  border-radius: 5px;
+}
+.start-tile svg {
+  color: var(--text-2);
+}
+.start-tile:hover,
+.start-sample:hover {
+  background: var(--bg-2);
+  border-color: var(--control-border);
+}
+.start-tile:hover svg {
+  color: var(--accent);
+}
+.start-sample .thumb {
+  border: 1px solid var(--border-2);
+  border-radius: 3px;
+}
+/* gallery of plot kinds: the chosen kind is framed by the accent, not filled with it */
+.gallery-tile {
+  border-radius: 4px;
+}
+.gallery-tile.on {
+  background: var(--bg-2);
+  color: var(--text);
+  box-shadow: 0 0 0 1px var(--accent);
+}
+.plot-preview {
+  border-radius: 4px;
+}
+
+/* ---------- floating surfaces and the dark mode ("Studio"): tools in graphite, the figure the only bright thing ---------- */
+.menu,
+.graph-peek,
+.drag-ghost {
+  background: var(--pop-bg);
+}
+.modal {
+  background: var(--pop-bg);
+}
+.modal .modal-actions {
+  background: color-mix(in srgb, var(--pop-bg) 88%, var(--text) 4%);
+}
+.modal-backdrop {
+  background: var(--backdrop);
+}
+.menu .mi:hover,
+.menu .mi.active {
+  background: color-mix(in srgb, var(--text) 10%, transparent);
+}
+.gallery-tile,
+.start-tile,
+.start-sample {
+  background: transparent;
+}
+.gallery-tile.on {
+  background: color-mix(in srgb, var(--text) 7%, transparent);
+}
+.start-tile:hover,
+.start-sample:hover {
+  background: color-mix(in srgb, var(--text) 5%, transparent);
+}
+/* the page of a figure keeps its own color in every mode; a hairline holds it against a dark canvas */
+.graph-paper {
+  box-shadow: 0 0 0 1px var(--border-2), 0 1px 3px rgba(0, 0, 0, 0.25), 0 8px 30px rgba(0, 0, 0, 0.15);
+}
+.accent-swatch.on {
+  box-shadow: 0 0 0 2px var(--pop-bg), 0 0 0 3.5px var(--text-2);
+}
+
+/* ---------- dragging a row of a list to another place (ui/reorder.ts) ---------- */
+.reorder-line {
+  position: fixed;
+  z-index: 10000;
+  pointer-events: none;
+  background: var(--accent);
+  border-radius: 1px;
+}
+.reorder-source {
+  opacity: 0.4;
+}
+body.reordering,
+body.reordering * {
+  cursor: grabbing !important;
+  user-select: none !important;
+  -webkit-user-select: none !important;
+}
+.reorder-grip {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  cursor: grab;
+  color: var(--text-3);
+  vertical-align: -2px;
+}
+.reorder-row:hover .reorder-grip {
+  color: var(--text-2);
+}
+
+/* ---------- outside the page: drafts and supporting data stay visible, veiled, and are not exported ---------- */
+.graph-desk {
+  position: absolute;
+  background: #ffffff;
+  border: 1px dashed var(--border);
+  border-radius: 2px;
+}
+.graph-paper > svg {
+  position: relative;
+}
+.ui-off-page .veil {
+  fill: var(--canvas-bg);
+  fill-opacity: 0.5;
+}
+.ui-off-page .edge {
+  stroke: var(--text-3);
+}
+
+/* ---------- the Windows app ---------- */
+/* the letter that opens a menu together with Alt, shown while Alt is held */
+.menubar-title u {
+  text-decoration-thickness: 1px;
+  text-underline-offset: 2px;
+}
+/* a recent project's folder sits where a shortcut would be: keep long names from widening the menu */
+.menu .mi .sc {
+  max-width: 220px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+/* WebView2 draws wide, always-visible scroll bars; the Mac app's are thin and fade away. Keep them slim and quiet. */
+:root[data-shell="windows"] * {
+  scrollbar-width: thin;
+  scrollbar-color: color-mix(in srgb, var(--text) 28%, transparent) transparent;
+}
+/* (the graph toolbar scrolls sideways without a bar, here too) */
+:root[data-shell="windows"] .graph-toolbar {
+  scrollbar-width: none;
 }

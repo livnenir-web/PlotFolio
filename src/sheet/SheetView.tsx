@@ -10,6 +10,7 @@ import { useGridTheme } from "./gridTheme";
 import { useContextMenu, type MenuItem } from "../ui/ContextMenu";
 import { Icon } from "../ui/Icon";
 import { useDialogs } from "../app/dialogs";
+import { keyHintSuffix } from "../app/shortcuts";
 import { exportSheetCsv } from "../export/csv";
 import { columnStatistics } from "./stats";
 import type { AnalysisOp } from "../analysis/AnalysisDialog";
@@ -79,21 +80,22 @@ export const DESIGNATION_LABEL: Record<Designation, string> = {
 
 /** Columns currently selected in the active sheet (sheet column indices). Read by the toolbar. */
 /** Columns a sheet should select as soon as it is shown (set by goToDataSheet when the sheet is not on screen yet). */
-let pendingColumnFocus: { sheetId: string; colIds: string[] } | null = null;
+let pendingColumnFocus: { sheetId: string; colIds: string[]; row?: number } | null = null;
 
 /**
  * Show the sheet behind a plot with its columns selected: opens (or switches to) the sheet's tab, then selects the
- * columns and scrolls them into view.
+ * columns and scrolls them into view. With `row` (a data row, 0 = the first), the cell of the first column on that
+ * row is selected instead: the cell behind one point of the plot.
  */
-export function goToDataSheet(sheetId: string, colIds: string[]): void {
+export function goToDataSheet(sheetId: string, colIds: string[], row?: number): void {
   const st = useStore.getState();
   if (!st.project.sheets.some((s) => s.id === sheetId)) return;
   const active = st.ui.activeTab;
   if (active?.kind === "sheet" && active.id === sheetId) {
-    window.dispatchEvent(new CustomEvent("plotkit:focusColumns", { detail: { sheetId, colIds } }));
+    window.dispatchEvent(new CustomEvent("plotkit:focusColumns", { detail: { sheetId, colIds, row } }));
     return;
   }
-  pendingColumnFocus = { sheetId, colIds };
+  pendingColumnFocus = { sheetId, colIds, row };
   st.openTab({ kind: "sheet", id: sheetId });
 }
 
@@ -164,7 +166,7 @@ export function SheetView({ sheet }: { sheet: Sheet }) {
   const nCols = sheet.columns.length + EXTRA_COLS;
 
   const columns = useMemo<GridColumn[]>(() => {
-    const cols: GridColumn[] = [{ title: "", id: "__rows", width: 66, themeOverride: { bgCell: theme.bgHeader, textDark: theme.textMedium } }];
+    const cols: GridColumn[] = [{ title: "", id: "__rows", width: 80, themeOverride: { bgCell: theme.bgHeader, textDark: theme.textMedium } }];
     for (let i = 0; i < nCols; i++) {
       const c = sheet.columns[i];
       cols.push({
@@ -348,9 +350,21 @@ export function SheetView({ sheet }: { sheet: Sheet }) {
 
   // "Go to data sheet" from a graph: select the plot's columns and scroll them into view
   useEffect(() => {
-    const focus = (ids: string[]) => {
+    const focus = (ids: string[], row?: number) => {
       const idx = ids.map((id) => sheet.columns.findIndex((c) => c.id === id)).filter((i) => i >= 0);
       if (!idx.length) return;
+      if (row !== undefined) {
+        // one point of a plot: its cell, scrolled into view
+        const cell: [number, number] = [idx[0] + 1, row + HDR];
+        setGridSel({ current: { cell, range: { x: cell[0], y: cell[1], width: 1, height: 1 }, rangeStack: [] }, columns: CompactSelection.empty(), rows: CompactSelection.empty() });
+        setCurCol(idx[0]);
+        sheetSelectionRef.sheetId = sheet.id;
+        sheetSelectionRef.cols = [];
+        sheetSelectionRef.cell = [idx[0], row];
+        setSelection({ kind: "column", sheetId: sheet.id, colId: sheet.columns[idx[0]].id });
+        ref.current?.scrollTo(cell[0], cell[1], "both", 0, 0, { hAlign: "center", vAlign: "center" });
+        return;
+      }
       let columns = CompactSelection.empty();
       for (const i of idx) columns = columns.add(i + 1);
       setGridSel({ columns, rows: CompactSelection.empty() });
@@ -362,8 +376,8 @@ export function SheetView({ sheet }: { sheet: Sheet }) {
       ref.current?.scrollTo(idx[0] + 1, 0, "horizontal", 0, 0, { hAlign: "start" });
     };
     const onEvent = (e: Event) => {
-      const d = (e as CustomEvent<{ sheetId: string; colIds: string[] }>).detail;
-      if (d?.sheetId === sheet.id) focus(d.colIds);
+      const d = (e as CustomEvent<{ sheetId: string; colIds: string[]; row?: number }>).detail;
+      if (d?.sheetId === sheet.id) focus(d.colIds, d.row);
     };
     window.addEventListener("plotkit:focusColumns", onEvent);
     let timer: number | undefined;
@@ -374,7 +388,7 @@ export function SheetView({ sheet }: { sheet: Sheet }) {
         const p = pendingColumnFocus;
         if (!p || p.sheetId !== sheet.id) return;
         pendingColumnFocus = null;
-        focus(p.colIds);
+        focus(p.colIds, p.row);
       }, 40);
     }
     return () => {
@@ -707,7 +721,7 @@ function HeaderDragHandle({
 
 function AnalysisButton({ sheetId }: { sheetId: string }) {
   const [menu, openMenu] = useContextMenu();
-  const open = (op: AnalysisOp) => useDialogs.getState().setAnalysis({ op, sheetId });
+  const open = (op: Exclude<AnalysisOp, "math">) => useDialogs.getState().setAnalysis({ op, sheetId });
   return (
     <>
       <button
@@ -721,6 +735,14 @@ function AnalysisButton({ sheetId }: { sheetId: string }) {
             { label: "Integrate", onSelect: () => open("integrate") },
             { label: "Normalize…", onSelect: () => open("normalize") },
             { label: "FFT…", onSelect: () => open("fft") },
+            { type: "sep" },
+            { label: "Compare groups (t-test, ANOVA, KS)…", onSelect: () => {
+                const sheet = useStore.getState().project.sheets.find((x) => x.id === sheetId);
+                const cols = sheetSelectionRef.sheetId === sheetId ? sheetSelectionRef.cols : [];
+                useDialogs.getState().setCompare({ sheetId, colIds: cols.map((i) => sheet?.columns[i]?.id).filter((x): x is string => !!x) });
+              },
+            },
+            { label: "Cumulative distribution (CDF)…", onSelect: () => open("cdf") },
             { type: "sep" },
             { label: "Average curves…", onSelect: () => open("average") },
             { label: "Interpolate onto X…", onSelect: () => open("interpolate") },
@@ -770,6 +792,9 @@ function FormulaBar({ sheet, colIndex, inputRef }: { sheet: Sheet; colIndex: num
       />
       <button className="btn small" onClick={apply} disabled={text === (col?.formula ?? "")}>
         Apply
+      </button>
+      <button className="btn small primary" title={`Plot columns of this sheet: choose a kind of plot from the gallery${keyHintSuffix("plot")}`} onClick={() => useDialogs.getState().setPlotDialog({ sheetId: sheet.id })}>
+        <Icon name="chart" size={13} /> Plot
       </button>
       <AnalysisButton sheetId={sheet.id} />
       <AddToGraphControls sheetId={sheet.id} />

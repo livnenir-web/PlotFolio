@@ -1,7 +1,7 @@
 // Smoothed heatmap rendering. The matrix is resampled on a fine pixel grid covering its extent in mm;
 // every pixel is mapped back to data coordinates through the axis scales (so log axes, reversed axes and
-// axis breaks are honoured), the matrix is interpolated there (bilinear or bicubic Catmull-Rom) and the
-// value is coloured through a 256-entry lookup of the colormap. The result is an <image> in the SVG.
+// axis breaks are honored), the matrix is interpolated there (bilinear or bicubic Catmull-Rom) and the
+// value is colored through a 256-entry lookup of the colormap. The result is an <image> in the SVG.
 
 import type { HeatmapInterpolation, Plot } from "../../model/types";
 import type { LayerLayout } from "../layout";
@@ -73,7 +73,7 @@ function inGap(s: AxisScale, r: number): boolean {
   return false;
 }
 
-/** Build (or fetch from cache) the interpolated image for a heatmap plot. Returns null when it cannot be rasterised. */
+/** Build (or fetch from cache) the interpolated image for a heatmap plot. Returns null when it cannot be rasterized. */
 export function heatmapImage(ll: LayerLayout, plot: Plot, mapper: ColorMapper, method: HeatmapInterpolation): HeatmapImage | null {
   if (typeof document === "undefined") return null;
   const m = ll.matrices.get(plot.id);
@@ -109,7 +109,7 @@ export function heatmapImage(ll: LayerLayout, plot: Plot, mapper: ColorMapper, m
   const hit = cache.get(key);
   if (hit !== undefined) return hit ? { ...hit, x: x0, y: y0, width: x1 - x0, height: y1 - y0 } : null;
 
-  // colour lookup table over the mapper range
+  // color lookup table over the mapper range
   const lut = new Uint8ClampedArray(256 * 3);
   for (let i = 0; i < 256; i++) {
     const hex = colorAt(cm.name, i / 255, cm.reverse);
@@ -152,7 +152,7 @@ export function heatmapImage(ll: LayerLayout, plot: Plot, mapper: ColorMapper, m
     const z10 = zAt(ri + 1, ci);
     const z11 = zAt(ri + 1, ci + 1);
     if (![z00, z01, z10, z11].every(Number.isFinite)) {
-      // missing neighbours: fall back to the nearest finite point
+      // missing neighbors: fall back to the nearest finite point
       const near = zAt(ty < 0.5 ? ri : ri + 1, tx < 0.5 ? ci : ci + 1);
       return Number.isFinite(near) ? near : NaN;
     }
@@ -166,7 +166,7 @@ export function heatmapImage(ll: LayerLayout, plot: Plot, mapper: ColorMapper, m
   if (!ctx) return null;
   const img = ctx.createImageData(w, h);
   const data = img.data;
-  // data coordinate of every column / row of pixels (pixel centres)
+  // data coordinate of every column / row of pixels (pixel centers)
   const colX = new Float64Array(w);
   const colGap = new Uint8Array(w);
   for (let i = 0; i < w; i++) {

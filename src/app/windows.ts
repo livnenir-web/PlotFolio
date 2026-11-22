@@ -2,7 +2,7 @@
 // with its own store. Pop-out windows belong to a project window and carry its label ("<parent>--graph-<id>").
 // This module knows which window is which, opens new project windows, and coordinates quitting.
 
-import { isTauri } from "../io/platform";
+import { isTauri, shell } from "../io/platform";
 import { useStore } from "../model/store";
 import { useDialogs } from "./dialogs";
 import { clearAutosave } from "../io/project";
@@ -28,14 +28,28 @@ export function isBlankProject(): boolean {
   return st.project.graphs.length === 0 && !st.project.sheets.some((s) => s.columns.some((c) => c.values.length > 0 || c.formula));
 }
 
+/**
+ * Window options of the Mac app only: the toolbar row doubles as the title bar (the traffic lights sit on it), and
+ * project windows are translucent like a Mac sidebar. The Windows app keeps the standard Windows title bar, so it
+ * gets none of these. The first window has the same split in tauri.conf.json / tauri.windows.conf.json.
+ */
+export async function macWindowChrome(translucent: boolean): Promise<Record<string, unknown>> {
+  if (shell() !== "mac") return {};
+  const { Effect, EffectState } = await import("@tauri-apps/api/window");
+  return {
+    titleBarStyle: "overlay",
+    hiddenTitle: true,
+    ...(translucent ? { transparent: true, windowEffects: { effects: [Effect.Sidebar], state: EffectState.Active } } : {}),
+  };
+}
+
 /** Open a new project window; `open` loads a file there, `recover` loads an autosave file. */
 export async function openProjectWindow(opts: { open?: string; recover?: string } = {}): Promise<void> {
   if (!isTauri()) {
-    useDialogs.getState().showToast("Separate project windows are available in the Mac app");
+    useDialogs.getState().showToast("Separate project windows are available in the desktop app");
     return;
   }
   const { WebviewWindow, getCurrentWebviewWindow } = await import("@tauri-apps/api/webviewWindow");
-  const { Effect, EffectState } = await import("@tauri-apps/api/window");
   const params = new URLSearchParams();
   if (opts.open) params.set("open", opts.open);
   if (opts.recover) params.set("recover", opts.recover);
@@ -61,10 +75,7 @@ export async function openProjectWindow(opts: { open?: string; recover?: string 
     minHeight: 500,
     x,
     y,
-    titleBarStyle: "overlay",
-    hiddenTitle: true,
-    transparent: true,
-    windowEffects: { effects: [Effect.Sidebar], state: EffectState.Active },
+    ...(await macWindowChrome(true)),
   });
   void w.once("tauri://error", (e) => console.error("project window failed", e));
 }

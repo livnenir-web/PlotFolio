@@ -5,9 +5,14 @@ import { useDialogs } from "../app/dialogs";
 import { useStore } from "../model/store";
 import { columnLetter } from "../model/defaults";
 import { sheetSelectionRef, DESIGNATION_LABEL } from "./SheetView";
-import type { PlotSource, PlotType } from "../model/types";
-import { PLOT_TYPE_OPTIONS, isMatrixType } from "../graph/inspector/PlotSourceFields";
+import type { PlotSource } from "../model/types";
+import { isMatrixType } from "../graph/inspector/PlotSourceFields";
 import { defaultMatrixSource } from "../graph/matrix";
+import { PLOT_KINDS, PLOT_KIND_GROUPS, plotKind } from "../graph/plotKinds";
+import { PlotKindIcon } from "./PlotKindIcon";
+import { previewGraph } from "./plotPreview";
+import { layoutGraph } from "../graph/layout";
+import { GraphSvg } from "../graph/render/GraphSvg";
 
 export function PlotDialog({ sheetId }: { sheetId: string }) {
   const close = () => useDialogs.getState().setPlotDialog(null);
@@ -35,10 +40,24 @@ export function PlotDialog({ sheetId }: { sheetId: string }) {
   const [xId, setXId] = useState<string>(initialX);
   const [zId, setZId] = useState<string>("");
   const [layoutMode, setLayoutMode] = useState<"block" | "xyz">("block");
-  const [type, setType] = useState<PlotType>("scatter");
+  const [kindId, setKindId] = useState("scatter");
+  const kind = plotKind(kindId);
+  const type = kind.type;
+  const project = useStore((s) => s.project);
   const [target, setTarget] = useState<string>(activeTab?.kind === "graph" ? activeTab.id : "new");
   const targetGraph = graphs.find((g) => g.id === target);
   const [layerId, setLayerId] = useState<string>("new");
+
+  // the figure these choices would give, drawn from the real columns (never added to the project)
+  const preview = useMemo(() => {
+    if (!sheet) return null;
+    try {
+      const g = previewGraph(project, sheet, { kind, yIds, xId: xId || null, zId: zId || null, matrixMode: layoutMode });
+      return g ? layoutGraph(project, g) : null;
+    } catch {
+      return null;
+    }
+  }, [project, sheet, kind, yIds, xId, zId, layoutMode]);
 
   if (!sheet) return null;
   const matrix = isMatrixType(type);
@@ -56,8 +75,8 @@ export function PlotDialog({ sheetId }: { sheetId: string }) {
       const lid = t?.layerId ?? st.project.graphs.find((g) => g.id === graphId)?.layers[0].id ?? "new";
       const src: PlotSource = { sheetId, xColId: xId || null, yColId: yIds[0] ?? "", zColId: zId || null };
       if (matrix) src.matrix = { ...defaultMatrixSource(sheet), mode: layoutMode, zColId: zId || null };
-      useStore.getState().addPlot(graphId, lid, type, src);
-    } else st.plotColumns(sheetId, yIds, noXy ? null : xId || null, t, type);
+      useStore.getState().addPlot(graphId, lid, type, src, undefined, kind.apply);
+    } else st.plotColumns(sheetId, yIds, noXy ? null : xId || null, t, type, kind.apply);
     close();
   };
 
@@ -72,7 +91,7 @@ export function PlotDialog({ sheetId }: { sheetId: string }) {
     <Dialog
       title="Plot columns"
       onClose={close}
-      width={540}
+      width={840}
       actions={
         <>
           <button className="btn" onClick={close}>
@@ -84,15 +103,44 @@ export function PlotDialog({ sheetId }: { sheetId: string }) {
         </>
       }
     >
-      <Row label="Plot type">
-        <SelectField value={type} options={PLOT_TYPE_OPTIONS} onChange={setType} />
-      </Row>
+      <div className="plot-dialog">
+      <div className="plot-gallery">
+        {PLOT_KIND_GROUPS.map((group) => (
+          <div key={group}>
+            <div className="gallery-label">{group}</div>
+            <div className="gallery-tiles">
+              {PLOT_KINDS.filter((k) => k.group === group).map((k) => (
+                <button
+                  key={k.id}
+                  type="button"
+                  className={"gallery-tile" + (k.id === kindId ? " on" : "")}
+                  title={k.hint}
+                  aria-pressed={k.id === kindId}
+                  onClick={() => {
+                    setKindId(k.id);
+                    // kinds with a single Y column keep the first ticked one
+                    if ((k.type === "scatter3d" || isMatrixType(k.type)) && yIds.length > 1) setYIds(yIds.slice(0, 1));
+                  }}
+                  onDoubleClick={() => ready && doPlot()}
+                >
+                  <PlotKindIcon id={k.id} />
+                  <span>{k.label}</span>
+                </button>
+              ))}
+            </div>
+          </div>
+        ))}
+        <div className="note" style={{ marginTop: 10 }}>{kind.hint}</div>
+      </div>
+      <div className="plot-side">
+      <div className="plot-preview" aria-label="Preview">
+        {preview ? <GraphSvg layout={preview} background widthCss="100%" heightCss="100%" /> : <span className="note">{ready ? "No preview for these columns" : "Choose the columns to see a preview"}</span>}
+      </div>
       {matrix && (
-        <Row label="Data layout">
+        <Row label="Data layout" title="Column block: the Y columns of the sheet form the Z grid — each column is one X position (numeric column names give the X values), each row one Y position, and an X column gives the Y values of the rows. Adjustable in the plot inspector.">
           <Segmented value={layoutMode} options={[{ value: "block", label: "Column block (Z grid)" }, { value: "xyz", label: "X, Y, Z columns" }]} onChange={setLayoutMode} />
         </Row>
       )}
-      {matrix && !xyz && <div className="hint">The Y columns of this sheet form the Z grid: each column is one X position (numeric column names give the X values), each row one Y position; an X column gives the row Y values. Adjustable in the plot inspector.</div>}
       {(!matrix || xyz) && !noXy && (
         <Row label="X column">
           <SelectField value={xId} options={[{ value: "", label: "Row index" }, ...colOpts]} onChange={setXId} />
@@ -100,7 +148,7 @@ export function PlotDialog({ sheetId }: { sheetId: string }) {
       )}
       {(!matrix || xyz) && (
         <Row label={noXy ? "Data columns" : needsZ ? "Y column" : "Y columns"}>
-          <div style={{ border: "1px solid var(--border)", borderRadius: 6, padding: 4, maxHeight: 180, overflow: "auto", width: "100%" }}>
+          <div style={{ border: "1px solid var(--border)", borderRadius: 3, padding: 4, maxHeight: 132, overflow: "auto", width: "100%" }}>
             {sheet.columns.map((c, i) => (
               <label key={c.id} className="check" style={{ padding: "2px 4px" }}>
                 <input
@@ -110,7 +158,11 @@ export function PlotDialog({ sheetId }: { sheetId: string }) {
                   onChange={(e) => setYIds(needsZ ? [c.id] : e.target.checked ? [...yIds, c.id] : yIds.filter((id) => id !== c.id))}
                 />
                 <span>{colLabel(i)}</span>
-                {c.designation === "yErr" && <span className="hint">(used automatically as error of the column before it)</span>}
+                {c.designation === "yErr" && (
+                  <span className="hint" title="Used automatically as the error of the column before it">
+                    error
+                  </span>
+                )}
               </label>
             ))}
           </div>
@@ -133,11 +185,11 @@ export function PlotDialog({ sheetId }: { sheetId: string }) {
       </Row>
       {targetGraph && (
         <Row label="Layer">
-          <SelectField value={layerId} options={[{ value: "new", label: "New layer (below the existing ones)" }, ...targetGraph.layers.map((l) => ({ value: l.id, label: `Add to ${l.name}` }))]} onChange={setLayerId} />
+          <SelectField value={layerId} options={[{ value: "new", label: "New layer (below the existing ones)" }, ...targetGraph.layers.map((l) => ({ value: l.id, label: `Add to ${l.name}${l.hidden ? " (hidden)" : ""}` }))]} onChange={setLayerId} />
         </Row>
       )}
-      {type === "bar" && <div className="hint">Each Y column becomes a bar series; a text or X column gives the category labels. Grouping, stacking and direction are in the plot inspector.</div>}
-      {type === "box" && <div className="hint">One box per selected column.</div>}
+      </div>
+      </div>
     </Dialog>
   );
 }

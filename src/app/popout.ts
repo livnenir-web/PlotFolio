@@ -29,10 +29,11 @@ const SYNC_DELAY_MS = 50;
 export async function popOutTab(tab: TabRef): Promise<void> {
   if (!isTauri()) {
     const { useDialogs } = await import("./dialogs");
-    useDialogs.getState().showToast("Separate windows are available in the Mac app");
+    useDialogs.getState().showToast("Separate windows are available in the desktop app");
     return;
   }
   const { WebviewWindow, getCurrentWebviewWindow } = await import("@tauri-apps/api/webviewWindow");
+  const { macWindowChrome } = await import("./windows");
   const parent = getCurrentWebviewWindow().label;
   const label = `${parent}--${tab.kind}-${tab.id}`;
   const existing = await WebviewWindow.getByLabel(label);
@@ -48,8 +49,7 @@ export async function popOutTab(tab: TabRef): Promise<void> {
     height: 650,
     minWidth: 500,
     minHeight: 400,
-    titleBarStyle: "overlay",
-    hiddenTitle: true,
+    ...(await macWindowChrome(false)),
   });
   popouts.add(label);
   void w.once("tauri://destroyed", () => popouts.delete(label));
@@ -67,7 +67,7 @@ function dragInProgress(): boolean {
 }
 
 /**
- * Trailing throttle: the project is serialised over IPC at most every SYNC_DELAY_MS, and the last state
+ * Trailing throttle: the project is serialized over IPC at most every SYNC_DELAY_MS, and the last state
  * after a burst of edits is always sent.
  */
 function makeThrottle(send: () => void): () => void {
@@ -108,7 +108,7 @@ export async function installMainSync(): Promise<void> {
   useStore.subscribe((s) => {
     if (s.project === last || applyingRemote) return;
     if (popouts.size === 0) {
-      last = s.project; // nobody to tell: no serialisation at all
+      last = s.project; // nobody to tell: no serialization at all
       return;
     }
     schedule();

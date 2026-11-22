@@ -3,7 +3,7 @@ import { Matrix, pseudoInverse } from "ml-matrix";
 
 const finite = (v: number) => Number.isFinite(v);
 
-/** Moving average with a centered window (odd size); edges use the available neighbours. */
+/** Moving average with a centered window (odd size); edges use the available neighbors. */
 export function movingAverage(y: number[], window: number): number[] {
   const w = Math.max(1, Math.round(window));
   const half = Math.floor(w / 2);

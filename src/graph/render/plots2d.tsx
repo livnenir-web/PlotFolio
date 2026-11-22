@@ -10,6 +10,7 @@ import { fmtMm, ptToMm } from "../units";
 import { isLogScale } from "../ticks";
 import { markerPath } from "./GraphSvg";
 import { heatmapImage } from "./heatmapRaster";
+import { density, densityAt, spreadOf } from "../violin";
 
 const HIT = "rgba(0,0,0,0)";
 
@@ -87,7 +88,7 @@ function cells(m: MatrixData, xs: AxisScale, ys: AxisScale, color: (z: number) =
   return <>{rects}</>;
 }
 
-/** Flat cells, memoised on the matrix, scales and mapper so a selection change does not rebuild thousands of rects. */
+/** Flat cells, memoized on the matrix, scales and mapper so a selection change does not rebuild thousands of rects. */
 const CellsG = memo(function CellsG({ m, xs, ys, mapper, quantize }: { m: MatrixData; xs: AxisScale; ys: AxisScale; mapper: (z: number) => string; quantize?: (z: number) => number }) {
   return <>{cells(m, xs, ys, mapper, quantize)}</>;
 });
@@ -128,7 +129,7 @@ export function ContourG({ ll, plot }: { ll: LayerLayout; plot: Plot }) {
   const m = ll.matrices.get(plot.id);
   const mapper = ll.colors.get(plot.id);
   const c = plot.contour;
-  // levels and the band quantiser are stable per (layout, plot) so the memoised cells and isolines are reused
+  // levels and the band quantizer are stable per (layout, plot) so the memoized cells and isolines are reused
   const levels = useMemo(() => contourLevels(ll, plot), [ll, plot]);
   const bandValue = useMemo(() => {
     const min = mapper?.min ?? 0;
@@ -191,12 +192,12 @@ export function ContourG({ ll, plot }: { ll: LayerLayout; plot: Plot }) {
   );
 }
 
-/** id of the hatch pattern of a bar plot in one colour (patterns live in the plot's own <defs>) */
+/** id of the hatch pattern of a bar plot in one color (patterns live in the plot's own <defs>) */
 export function barPatternId(plotId: string, color: string): string {
   return `hatch-${plotId}-${color.replace(/[^0-9a-zA-Z]/g, "")}`;
 }
 
-/** The hatch pattern: lines (or dots) in the bar colour over white, 1 mm pitch. */
+/** The hatch pattern: lines (or dots) in the bar color over white, 1 mm pitch. */
 function BarPattern({ id, kind, color }: { id: string; kind: NonNullable<BarOptions["pattern"]>; color: string }) {
   const sw = ptToMm(0.5);
   const S = 1; // pitch in mm
@@ -234,7 +235,7 @@ export function BarG({ ll, plot, interactive }: { ll: LayerLayout; plot: Plot; i
   const errs: string[] = [];
   const labelNodes: React.ReactNode[] = [];
   const cap = plot.errorBars.capMm / 2;
-  // colour of bar i: the plot colour, one palette colour per category, or the colour-by-column mapping
+  // color of bar i: the plot color, one palette color per category, or the color-by-column mapping
   const mapper = bar.colorMode === "column" && plot.colorBy?.colId ? ll.colors.get(plot.id) : undefined;
   const colorOf = (i: number): string => {
     if (bar.colorMode === "category") return ll.palette[i % ll.palette.length] ?? plot.color;
@@ -275,7 +276,7 @@ export function BarG({ ll, plot, interactive }: { ll: LayerLayout; plot: Plot; i
     if (lbl && lblStyle) {
       const text = lbl.source === "column" ? String(d.labels?.[i] ?? "") : lbl.source === "x" ? (ll.categories?.[i] ?? "") : fmtLabel(v);
       if (text) {
-        // beyond the end of the bar (inside it for a "below"/"left" position), centred on the bar
+        // beyond the end of the bar (inside it for a "below"/"left" position), centered on the bar
         const mid = (a + b) / 2;
         const inside = lbl.position === "below" || lbl.position === "left";
         const dir = (v >= 0 ? -1 : 1) * (horizontal ? -1 : 1) * (inside ? -1 : 1);
@@ -296,7 +297,7 @@ export function BarG({ ll, plot, interactive }: { ll: LayerLayout; plot: Plot; i
     }
   }
   void interactive;
-  // the legend swatch references the plot-colour pattern too
+  // the legend swatch references the plot-color pattern too
   if (pattern) usedColors.add(plot.color);
   return (
     <>
@@ -345,6 +346,60 @@ export function BoxG({ ll, plot }: { ll: LayerLayout; plot: Plot }) {
     ? { x: Math.min(q1!, q3!), y: c! - half, width: Math.abs(q3! - q1!), height: 2 * half }
     : { x: c! - half, y: Math.min(q1!, q3!), width: 2 * half, height: Math.abs(q3! - q1!) };
   const capW = half * 0.5;
+  const style = box.style ?? "box";
+  if (style !== "box") {
+    // violin: the smoothed distribution mirrored about the group's position; points: every value, spread sideways
+    // by the density at its value, so the cloud takes the violin's shape
+    const den = density(st.values);
+    const pt = (o: number, i: number, rr: number) => {
+      const v = val.map(o);
+      if (v === null) return "";
+      const cc = c! + spreadOf(i) * half * 0.9 * densityAt(den, o);
+      return markerPath("circle", horizontal ? v : cc, horizontal ? cc : v, rr);
+    };
+    const meanMark = box.showMean && mean !== null && (
+      <g className="mean" fill="none" stroke={plot.color} strokeWidth={lw}>
+        <path d={markerPath("square", horizontal ? mean : c!, horizontal ? c! : mean, Math.max(r, 0.5))} />
+      </g>
+    );
+    if (style === "points") {
+      return (
+        <>
+          <g className="data" fill={plot.color} fillOpacity={0.6} stroke="none">
+            <path d={st.values.map((o, i) => pt(o, i, Math.max(r, 0.35))).join("")} />
+          </g>
+          <g className="median" stroke={plot.color} strokeWidth={lw * 1.5} fill="none">
+            <path d={`M${P(c! - half, med!)}L${P(c! + half, med!)}`} />
+          </g>
+          {meanMark}
+        </>
+      );
+    }
+    const edge = den.v.map((v, k) => ({ v: val.map(v), w: half * den.d[k] })).filter((e): e is { v: number; w: number } => e.v !== null);
+    const outline = edge.length > 1 ? `M${edge.map((e) => P(c! + e.w, e.v)).join("L")}L${[...edge].reverse().map((e) => P(c! - e.w, e.v)).join("L")}Z` : "";
+    const inner = Math.max(half * 0.12, 0.25);
+    const innerRect = horizontal
+      ? { x: Math.min(q1!, q3!), y: c! - inner, width: Math.abs(q3! - q1!), height: 2 * inner }
+      : { x: c! - inner, y: Math.min(q1!, q3!), width: 2 * inner, height: Math.abs(q3! - q1!) };
+    return (
+      <>
+        <g className="violin" stroke={plot.color} strokeWidth={lw} strokeLinejoin="round" fill={plot.marker.filled ? plot.color : "#ffffff"} fillOpacity={plot.marker.filled ? 0.25 : 1}>
+          <path d={outline} />
+        </g>
+        {box.showData && (
+          <g className="data" fill={plot.color} fillOpacity={0.5} stroke="none">
+            <path d={st.values.map((o, i) => pt(o, i, Math.max(r * 0.8, 0.35))).join("")} />
+          </g>
+        )}
+        <g className="box" stroke={plot.color} strokeWidth={lw} fill={plot.color}>
+          <path d={`M${P(c!, wl!)}L${P(c!, wh!)}`} fill="none" />
+          <rect x={fmtMm(innerRect.x)} y={fmtMm(innerRect.y)} width={fmtMm(innerRect.width)} height={fmtMm(innerRect.height)} />
+          <path d={`M${P(c! - inner, med!)}L${P(c! + inner, med!)}`} fill="none" stroke="#ffffff" strokeWidth={lw * 1.5} />
+        </g>
+        {meanMark}
+      </>
+    );
+  }
   return (
     <>
       <g className="whiskers" stroke={plot.color} strokeWidth={lw} fill="none">

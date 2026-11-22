@@ -1,4 +1,5 @@
 import type { Column, HistogramOptions, Plot, Project, Sheet } from "../model/types";
+import { ecdf } from "../analysis/compare";
 
 export interface XYData {
   x: number[];
@@ -7,7 +8,7 @@ export interface XYData {
   xErr?: number[];
   /** text of a label column, per kept row */
   labels?: (string | number | null)[];
-  /** values of the colour-by column, per kept row */
+  /** values of the color-by column, per kept row */
   colorVals?: number[];
 }
 
@@ -82,6 +83,21 @@ function computePlotData(sheet: Sheet | undefined, yc?: Column, xc?: Column, yec
   return { x, y, yErr: yec ? yErr : undefined, xErr: xec ? xErr : undefined, labels: lc ? labels : undefined, colorVals: cc ? colorVals : undefined };
 }
 
+/**
+ * The sheet row of each point of a plot, in the order getPlotData returns the points (the same rows are dropped:
+ * those without a number in x or y). For going from a point on the figure back to its cell.
+ */
+export function plotRowIndices(project: Project, plot: Plot): number[] {
+  const sheet = project.sheets.find((s) => s.id === plot.source.sheetId);
+  const yc = col(sheet, plot.source.yColId);
+  const xc = col(sheet, plot.source.xColId);
+  if (!yc) return [];
+  const n = Math.max(yc.values.length, xc?.values.length ?? 0);
+  const rows: number[] = [];
+  for (let i = 0; i < n; i++) if (Number.isFinite(num(yc.values[i])) && (!xc || Number.isFinite(num(xc.values[i])))) rows.push(i);
+  return rows;
+}
+
 export interface XYZData extends XYData {
   z: number[];
 }
@@ -136,6 +152,11 @@ export function histogramBins(values: number[], opts: HistogramOptions): Bin[] {
 }
 
 function computeBins(values: number[], opts: HistogramOptions): Bin[] {
+  if (opts.display === "cdf") {
+    // one step per distinct value: from x0 the curve stays at `value` until x1, the next distinct value
+    const e = ecdf(values);
+    return e.x.map((x, i) => ({ x0: x, x1: e.x[i + 1] ?? x, count: e.count[i], value: opts.normalization === "count" ? e.count[i] : e.count[i] / e.n }));
+  }
   const v = values.filter((x) => Number.isFinite(x));
   if (!v.length) return [];
   const ext = extent(v)!;

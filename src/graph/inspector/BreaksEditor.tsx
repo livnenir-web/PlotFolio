@@ -134,13 +134,14 @@ export function BreaksEditor({ axis, eff, upd }: { axis: Axis; eff: { from: numb
   return (
     <Group
       title="Axis breaks"
+      info="A break skips a range of values; each segment then gets its own limits, scale type and ticks, and the gap can be placed anywhere along the axis."
       right={
         <button className="btn small" onClick={addBreak}>
           Add break
         </button>
       }
     >
-      {sorted.length === 0 && <div className="hint">No breaks. A break skips a range of values; each segment then gets its own limits, scale type and ticks, and the gap can be placed anywhere along the axis.</div>}
+      {sorted.length === 0 && <div className="note">No breaks.</div>}
       {sorted.length > 0 &&
         Array.from({ length: n }, (_, i) => (
           <div key={i}>

@@ -1,19 +1,24 @@
 import { createContext, useContext, useEffect, useLayoutEffect, useRef, useState, type ReactNode } from "react";
 import { create } from "zustand";
-import { pauseHistory, resumeHistory } from "../model/store";
+import { beginEdit, endEdit } from "../model/store";
 import { applyMarkupShortcut } from "./markupKeys";
 import { Icon } from "./Icon";
+import { Info } from "./Tooltip";
 
 // ---------------------------------------------------------------- inspector accordion
 //
-// Inside an <InspectorPanel kind="plot"> every titled Group is a collapsible section and only one of them is open
-// at a time; which one is remembered per panel kind for the whole session (and across restarts). Groups outside a
-// panel (dialogs) render as before.
+// Objects with many settings (figure, layer, axis, plot) get an <InspectorPanel> with tabs: under a tab every titled
+// Group is a collapsible section and only one of them is open at a time; which one is remembered per panel kind and
+// tab for the whole session and across restarts. Objects with few settings (text, legend, shape, column) have no
+// tabs and show all their Groups at once, as do Groups outside a panel (dialogs).
 
 interface SectionsState {
-  /** open section id per panel kind */
+  /** open section id per "kind/tab" of a panel with tabs */
   open: Record<string, string | undefined>;
   setOpen: (panel: string, id: string | undefined) => void;
+  /** chosen tab per panel kind, for panels with tabs (kept while the app runs) */
+  tab: Record<string, string | undefined>;
+  setTab: (panel: string, id: string) => void;
 }
 const SECTIONS_KEY = "plotkit.inspectorSections";
 const loadSections = (): Record<string, string | undefined> => {
@@ -35,7 +40,19 @@ export const useInspectorSections = create<SectionsState>((set) => ({
       }
       return { open };
     }),
+  tab: {},
+  setTab: (panel, id) => set((s) => ({ tab: { ...s.tab, [panel]: id } })),
 }));
+
+/** Bring a tab of a panel to the front from elsewhere in the app (the Animate button shows the animation's settings). */
+export function showInspectorTab(panel: string, tab: string): void {
+  useInspectorSections.getState().setTab(panel, tab);
+}
+
+export interface PanelTab {
+  id: string;
+  label: string;
+}
 
 interface PanelCtx {
   kind: string;
@@ -43,11 +60,23 @@ interface PanelCtx {
   /** ids of the sections currently rendered, in order */
   register: (id: string) => () => void;
   mounted: string[];
+  /** tabs of the panel and the one showing (panels without tabs: none) */
+  tabs?: PanelTab[];
+  tab?: string;
 }
 const PanelContext = createContext<PanelCtx | null>(null);
+/** The tab that sections inside belong to when they name none (see InTab). */
+const TabContext = createContext<string | undefined>(undefined);
 
-/** The inspector column for one kind of selection; its titled Groups become an accordion. */
-export function InspectorPanel({ kind, defaultOpen, children }: { kind: string; defaultOpen?: string; children: ReactNode }) {
+/** Sections rendered inside (also by other components) show under this tab of the panel. */
+export function InTab({ tab, children }: { tab: string; children: ReactNode }) {
+  return <TabContext.Provider value={tab}>{children}</TabContext.Provider>;
+}
+
+/** The inspector column for one kind of selection; with `tabs`, the titled Groups under each tab become an accordion. */
+export function InspectorPanel({ kind, defaultOpen, tabs, children }: { kind: string; defaultOpen?: string; tabs?: PanelTab[]; children: ReactNode }) {
+  const chosen = useInspectorSections((s) => s.tab[kind]);
+  const tab = tabs?.length ? (tabs.some((t) => t.id === chosen) ? chosen : tabs[0].id) : undefined;
   const [mounted, setMounted] = useState<string[]>([]);
   const ref = useRef<string[]>([]);
   const register = (id: string) => {
@@ -58,8 +87,8 @@ export function InspectorPanel({ kind, defaultOpen, children }: { kind: string; 
       setMounted(ref.current);
     };
   };
-  const ctx = useRef<PanelCtx>({ kind, defaultOpen, register, mounted });
-  ctx.current = { kind, defaultOpen, register, mounted };
+  const ctx = useRef<PanelCtx>({ kind, defaultOpen, register, mounted, tabs, tab });
+  ctx.current = { kind, defaultOpen, register, mounted, tabs, tab };
   return (
     <PanelContext.Provider value={ctx.current}>
       <div className="inspector">{children}</div>
@@ -67,11 +96,30 @@ export function InspectorPanel({ kind, defaultOpen, children }: { kind: string; 
   );
 }
 
-export function Row({ label, children, title }: { label: ReactNode; children: ReactNode; title?: string }) {
+/** The tab strip of an InspectorPanel with tabs; place it under the panel's header. */
+export function PanelTabs() {
+  const panel = useContext(PanelContext);
+  if (!panel?.tabs?.length) return null;
+  return (
+    <div className="panel-tabs" role="tablist">
+      {panel.tabs.map((t) => (
+        <button key={t.id} role="tab" aria-selected={t.id === panel.tab} className={t.id === panel.tab ? "on" : ""} onClick={() => useInspectorSections.getState().setTab(panel.kind, t.id)}>
+          {t.label}
+        </button>
+      ))}
+    </div>
+  );
+}
+
+/**
+ * One labeled line of controls. Fields with a set width keep it and the others share what is left (see `.row` in
+ * styles.css). `wrap` lets a line of buttons or checkboxes continue on a second line instead of running off the panel.
+ */
+export function Row({ label, children, title, wrap }: { label: ReactNode; children: ReactNode; title?: string; wrap?: boolean }) {
   return (
     <div className="row" title={title}>
       <label>{label}</label>
-      <div style={{ display: "flex", gap: 4, alignItems: "center", minWidth: 0 }}>{children}</div>
+      <div style={{ display: "flex", gap: 4, alignItems: "center", minWidth: 0, flexWrap: wrap ? "wrap" : undefined }}>{children}</div>
     </div>
   );
 }
@@ -80,18 +128,25 @@ export function Row({ label, children, title }: { label: ReactNode; children: Re
  * A titled block of controls. Inside an InspectorPanel it is a collapsible section (give it an `id` when the title
  * changes with the selection); `right` holds a control shown in the header, such as an Add button.
  */
-export function Group({ title, children, right, id }: { title?: ReactNode; children: ReactNode; right?: ReactNode; id?: string }) {
+export function Group({ title, children, right, id, info, tab }: { title?: ReactNode; children: ReactNode; right?: ReactNode; id?: string; info?: string; tab?: string }) {
   const panel = useContext(PanelContext);
   const sid = id ?? (typeof title === "string" ? title : undefined);
-  const collapsible = !!panel && !!sid;
-  const openId = useInspectorSections((s) => (panel ? s.open[panel.kind] : undefined));
+  // in a panel with tabs a section shows under its tab (the first tab when it names none; "*" = under every tab)
+  const inherited = useContext(TabContext);
+  const own = tab ?? inherited;
+  const shown = !panel?.tabs?.length || own === "*" || (own ?? panel.tabs[0].id) === panel.tab;
+  // sections fold only in a panel with tabs; a short panel (text, legend, shape, column) shows everything at once
+  const collapsible = !!panel?.tabs?.length && !!sid && shown;
+  const openId = useInspectorSections((s) => (panel?.tab ? s.open[`${panel.kind}/${panel.tab}`] : undefined));
   useLayoutEffect(() => (collapsible ? panel!.register(sid!) : undefined), [collapsible, sid, panel?.kind]); // eslint-disable-line react-hooks/exhaustive-deps
+  if (!shown) return null;
   if (!collapsible) {
     return (
       <div className="group">
         {title && (
           <div className="group-title">
             <span>{title}</span>
+            {info && <Info text={info} />}
             {right}
           </div>
         )}
@@ -101,14 +156,34 @@ export function Group({ title, children, right, id }: { title?: ReactNode; child
   }
   // the remembered section if it is on screen, else the panel's default, else the first section
   const mounted = panel!.mounted;
+  const key = `${panel!.kind}/${panel!.tab}`;
+  // a tab's only section is always open, and drops a title that would only repeat the tab's name
+  const solo = mounted.length === 1 && mounted[0] === sid;
+  if (solo) {
+    const label = panel!.tabs!.find((t) => t.id === panel!.tab)?.label;
+    const bare = !info && !right && typeof title === "string" && title.toLowerCase() === label?.toLowerCase();
+    return (
+      <div className={"group collapsible open solo" + (bare ? " bare" : "")}>
+        {!bare && (
+          <div className="group-title">
+            <span style={{ flex: 1 }}>{title}</span>
+            {info && <Info text={info} />}
+            {right}
+          </div>
+        )}
+        {children}
+      </div>
+    );
+  }
   // ("-" = the user collapsed every section)
   const effective = openId === "-" ? undefined : openId && mounted.includes(openId) ? openId : panel!.defaultOpen && mounted.includes(panel!.defaultOpen) ? panel!.defaultOpen : mounted[0];
   const open = effective === sid;
   return (
     <div className={"group collapsible" + (open ? " open" : "")}>
-      <div className="group-title" onClick={() => useInspectorSections.getState().setOpen(panel!.kind, open ? "-" : sid!)} role="button" title={open ? "Collapse" : "Expand"}>
+      <div className="group-title" onClick={() => useInspectorSections.getState().setOpen(key, open ? "-" : sid!)} role="button" title={open ? "Collapse" : "Expand"}>
         <Icon name="chevron" size={11} style={{ transform: open ? "rotate(90deg)" : "none", transition: "transform .12s", color: "var(--text-3)", flex: "none" }} />
         <span style={{ flex: 1 }}>{title}</span>
+        {info && <Info text={info} />}
         {right && <span onClick={(e) => e.stopPropagation()}>{right}</span>}
       </div>
       {open && children}
@@ -117,7 +192,19 @@ export function Group({ title, children, right, id }: { title?: ReactNode; child
 }
 
 
-/** Text input that commits on blur / Enter and keeps local state while typing. */
+/**
+ * One live edit of a field, from the first keystroke (or focus) to blur, Enter, Escape, or to the moment the app
+ * moves on (see `beginEdit` in the store). The edit keeps the `onCommit` it started with, so its values go to the
+ * object that was selected then, whatever the field is showing by the time it ends.
+ */
+interface FieldEdit<T> {
+  start: T;
+  commit: (v: T) => void;
+  end: () => boolean | void;
+  cancelled?: boolean;
+}
+
+/** Text input that applies every keystroke and keeps local state while typing; the whole edit is one undo step. */
 export function TextField({
   value,
   onCommit,
@@ -136,32 +223,40 @@ export function TextField({
   multiline?: boolean;
 }) {
   const [v, setV] = useState(value);
-  const start = useRef<string | null>(null);
+  const edit = useRef<FieldEdit<string> | null>(null);
   useEffect(() => setV(value), [value]);
-  // Live editing: every keystroke is applied with history paused; blur records one undo step.
-  const onFocus = () => {
-    start.current = value;
-    pauseHistory();
+  const begin = (): FieldEdit<string> => {
+    if (edit.current) return edit.current;
+    const e: FieldEdit<string> = {
+      start: value,
+      commit: onCommit,
+      end: () => {
+        edit.current = null;
+        return !e.cancelled;
+      },
+    };
+    edit.current = e;
+    beginEdit(e.end);
+    return e;
   };
   const live = (next: string) => {
+    const e = begin();
     setV(next);
-    if (start.current === null) {
-      start.current = value;
-      pauseHistory();
-    }
-    onCommit(next);
+    e.commit(next);
   };
   const commit = () => {
-    if (start.current !== null) {
-      const s0 = start.current;
-      start.current = null;
-      if (v !== s0) {
-        onCommit(s0);
-        resumeHistory();
-        onCommit(v);
-      } else resumeHistory();
-    } else if (v !== value) onCommit(v);
+    if (edit.current) endEdit(edit.current.end);
   };
+  const cancel = () => {
+    const e = edit.current;
+    if (!e) return;
+    e.cancelled = true;
+    setV(e.start);
+    endEdit(e.end);
+  };
+  // the field goes away while it is being edited (another object was selected): the edit ends with it
+  useEffect(() => () => void (edit.current && endEdit(edit.current.end)), []);
+  const onFocus = () => void begin();
   if (multiline)
     return (
       <textarea
@@ -200,8 +295,7 @@ export function TextField({
           commit();
           (e.target as HTMLInputElement).blur();
         } else if (e.key === "Escape") {
-          if (start.current !== null) live(start.current);
-          setV(start.current ?? value);
+          cancel();
           (e.target as HTMLInputElement).blur();
         }
         e.stopPropagation();
@@ -231,40 +325,50 @@ export function NumberField({
 }) {
   const fmt = (n: number | null) => (n === null || n === undefined ? "" : String(Number(n.toPrecision(8))));
   const [v, setV] = useState(fmt(value));
-  const start = useRef<number | null | undefined>(undefined);
+  const text = useRef(v);
+  text.current = v;
+  const edit = useRef<FieldEdit<number | null> | null>(null);
   const focused = useRef(false);
   useEffect(() => {
     if (!focused.current) setV(fmt(value));
   }, [value]);
+  const begin = (): FieldEdit<number | null> => {
+    if (edit.current) return edit.current;
+    const e: FieldEdit<number | null> = {
+      start: value,
+      commit: (n) => n !== null && onCommit(n),
+      end: () => {
+        edit.current = null;
+        const n = Number(text.current);
+        // Escape, or text that is no number: the edit is thrown away
+        if (e.cancelled || text.current.trim() === "" || !Number.isFinite(n)) {
+          setV(fmt(e.start));
+          return false;
+        }
+      },
+    };
+    edit.current = e;
+    beginEdit(e.end);
+    return e;
+  };
   const onFocus = () => {
     focused.current = true;
-    start.current = value;
-    pauseHistory();
+    begin();
   };
-  const live = (text: string) => {
-    setV(text);
-    const n = Number(text);
-    if (text.trim() !== "" && Number.isFinite(n) && n !== value) onCommit(n);
+  const live = (next: string) => {
+    const e = begin();
+    text.current = next;
+    setV(next);
+    const n = Number(next);
+    if (next.trim() !== "" && Number.isFinite(n) && n !== value) e.commit(n);
   };
   const commit = () => {
     focused.current = false;
-    const n = Number(v);
-    const valid = v.trim() !== "" && Number.isFinite(n);
-    if (start.current !== undefined) {
-      const s0 = start.current;
-      start.current = undefined;
-      if (valid && n !== s0) {
-        if (s0 !== null) onCommit(s0);
-        resumeHistory();
-        onCommit(n);
-      } else {
-        if (s0 !== null && s0 !== value) onCommit(s0); // revert live edits (invalid text or Escape)
-        resumeHistory();
-        setV(fmt(s0 ?? value));
-      }
-    } else if (valid && n !== value) onCommit(n);
+    if (edit.current) endEdit(edit.current.end);
     else setV(fmt(value));
   };
+  // the field goes away while it is being edited (another object was selected): the edit ends with it
+  useEffect(() => () => void (edit.current && endEdit(edit.current.end)), []);
   return (
     <input
       className="input"
@@ -284,7 +388,7 @@ export function NumberField({
           commit();
           (e.target as HTMLInputElement).blur();
         } else if (e.key === "Escape") {
-          setV(fmt(start.current ?? value));
+          if (edit.current) edit.current.cancelled = true;
           (e.target as HTMLInputElement).blur();
         }
         e.stopPropagation();
@@ -374,8 +478,8 @@ export function FontFields({
           onChange={(font) => onChange({ font })}
         />
       </Row>
-      <Row label="Size (pt)">
-        <NumberField value={style.sizePt} step={0.5} min={1} onCommit={(sizePt) => onChange({ sizePt })} style={{ width: 64 }} />
+      <Row wrap label="Size (pt)">
+        <NumberField value={style.sizePt} step={0.5} min={1} onCommit={(sizePt) => onChange({ sizePt })} style={{ width: 46 }} />
         <CheckField label="Bold" checked={style.bold} onChange={(bold) => onChange({ bold })} />
         <CheckField label="Italic" checked={style.italic} onChange={(italic) => onChange({ italic })} />
       </Row>
@@ -393,7 +497,7 @@ export function OpacityField({ value, onChange }: { value: number; onChange: (v:
   const pct = Math.round(Math.min(1, Math.max(0, value)) * 100);
   return (
     <>
-      <input type="range" min={0} max={100} step={5} value={pct} onChange={(e) => onChange(Number(e.target.value) / 100)} style={{ width: 90 }} />
+      <input type="range" min={0} max={100} step={5} value={pct} onChange={(e) => onChange(Number(e.target.value) / 100)} style={{ flex: 1, minWidth: 30 }} />
       <NumberField value={pct} step={5} min={0} max={100} onCommit={(v) => onChange(Math.min(100, Math.max(0, v)) / 100)} style={{ width: 52 }} />
       <span className="hint">%</span>
     </>

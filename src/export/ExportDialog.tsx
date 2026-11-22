@@ -4,7 +4,7 @@ import { CheckField, NumberField, Row, Segmented } from "../ui/Fields";
 import { useDialogs } from "../app/dialogs";
 import { useStore } from "../model/store";
 import { exportGraphAs, rasterSize } from "./exportGraph";
-import { layoutGraph } from "../graph/layout";
+import { layoutGraph, pageContent } from "../graph/layout";
 
 export function ExportDialog({ graphId }: { graphId: string }) {
   const close = () => useDialogs.getState().setExportDialog(null);
@@ -19,6 +19,7 @@ export function ExportDialog({ graphId }: { graphId: string }) {
   if (!graph) return null;
   const layout = layoutGraph(project, graph);
   const px = rasterSize(project, graph, dpi);
+  const left = pageContent(layout).left;
 
   const run = async (target: "file" | "clipboard") => {
     setBusy(true);
@@ -36,6 +37,11 @@ export function ExportDialog({ graphId }: { graphId: string }) {
   return (
     <Dialog
       title={`Export ${graph.name}`}
+      info={
+        format === "svg"
+          ? "SVG is exported at the physical canvas size with no background. Axes, ticks, labels and each dataset are grouped so they stay editable in Illustrator or Inkscape."
+          : "Raster exports render the canvas at the chosen resolution. Fonts are the installed ones (Arial by default)."
+      }
       onClose={close}
       width={460}
       actions={
@@ -98,11 +104,11 @@ export function ExportDialog({ graphId }: { graphId: string }) {
           <CheckField label="Transparent background" checked={transparent} onChange={setTransparent} />
         </Row>
       )}
-      <div className="hint" style={{ marginTop: 8 }}>
-        {format === "svg"
-          ? "SVG is exported at the physical canvas size with no background. Axes, ticks, labels and each dataset are grouped so they stay editable in Illustrator or Inkscape."
-          : "Raster exports render the canvas at the chosen resolution. Fonts are the installed ones (Arial by default)."}
-      </div>
+      {left > 0 && (
+        <div className="note">
+          {left === 1 ? "1 object lies" : `${left} objects lie`} outside the canvas and {left === 1 ? "is" : "are"} left out of the export.
+        </div>
+      )}
     </Dialog>
   );
 }

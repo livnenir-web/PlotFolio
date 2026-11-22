@@ -2,9 +2,9 @@ import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import type { Graph, Project } from "../model/types";
 import { useStore } from "../model/store";
-import { layoutGraph } from "../graph/layout";
+import { layoutGraph, pageContent, type GraphLayout } from "../graph/layout";
 import { GraphSvg } from "../graph/render/GraphSvg";
-import { saveBinaryAs, saveTextAs } from "../io/platform";
+import { baseName, saveBinaryAs, saveTextAs } from "../io/platform";
 import { useDialogs } from "../app/dialogs";
 
 export interface RasterOptions {
@@ -14,11 +14,28 @@ export interface RasterOptions {
   jpegQuality: number;
 }
 
+/** Standalone SVG markup of a laid-out figure (or of one frame of its animation) at physical size. */
+export function layoutToSvg(layout: GraphLayout, background = false): string {
+  // what lies outside the canvas is for the screen only (drafts, supporting data): it is not written out
+  const body = renderToStaticMarkup(createElement(GraphSvg, { layout: pageContent(layout).layout, background }));
+  return `<?xml version="1.0" encoding="UTF-8" standalone="no"?>\n${body.replace("<svg ", '<svg version="1.1" ')}`;
+}
+
 /** Standalone SVG markup at physical size. No background (per user requirement), semantic groups. */
 export function graphToSvg(project: Project, graph: Graph, background = false): string {
-  const layout = layoutGraph(project, graph);
-  const body = renderToStaticMarkup(createElement(GraphSvg, { layout, background }));
-  return `<?xml version="1.0" encoding="UTF-8" standalone="no"?>\n${body.replace("<svg ", '<svg version="1.1" ')}`;
+  return layoutToSvg(layoutGraph(project, graph), background);
+}
+
+/** Draw SVG markup onto a canvas, scaled to fill it (the vector picture is rasterized at the canvas size). */
+export async function drawSvgOnCanvas(svg: string, ctx: CanvasRenderingContext2D, width: number, height: number): Promise<void> {
+  const url = URL.createObjectURL(new Blob([svg], { type: "image/svg+xml;charset=utf-8" }));
+  try {
+    const img = await loadImage(url);
+    ctx.imageSmoothingEnabled = true;
+    ctx.drawImage(img, 0, 0, width, height);
+  } finally {
+    URL.revokeObjectURL(url);
+  }
 }
 
 export function rasterSize(project: Project, graph: Graph, dpi: number): { width: number; height: number } {
@@ -62,7 +79,7 @@ function loadImage(url: string): Promise<HTMLImageElement> {
   });
 }
 
-function safeName(s: string): string {
+export function safeName(s: string): string {
   return s.replace(/[\\/:*?"<>|]+/g, "-").trim() || "graph";
 }
 
@@ -79,12 +96,12 @@ export async function exportGraphAs(graphId: string, target: ExportTarget, opts?
   try {
     if (target === "svg") {
       const path = await saveTextAs(graphToSvg(st.project, graph), [{ name: "SVG", extensions: ["svg"] }], `${name}.svg`);
-      if (path) toast(`Saved ${path.split("/").pop()}`);
+      if (path) toast(`Saved ${baseName(path)}`);
     } else if (target === "png" || target === "jpeg") {
       const blob = await graphToRaster(st.project, graph, target, o);
       const ext = target === "png" ? "png" : "jpg";
       const path = await saveBinaryAs(blob, [{ name: target.toUpperCase(), extensions: [ext] }], `${name}.${ext}`);
-      if (path) toast(`Saved ${path.split("/").pop()}`);
+      if (path) toast(`Saved ${baseName(path)}`);
     } else if (target === "clipboard-svg") {
       await navigator.clipboard.writeText(graphToSvg(st.project, graph));
       toast("SVG copied to clipboard");

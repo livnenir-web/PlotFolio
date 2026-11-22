@@ -1,5 +1,6 @@
 use std::sync::Mutex;
-use tauri::menu::{AboutMetadataBuilder, Menu, MenuItemBuilder, PredefinedMenuItem, Submenu, SubmenuBuilder};
+use std::collections::HashMap;
+use tauri::menu::{AboutMetadataBuilder, Menu, MenuItemBuilder, MenuItemKind, PredefinedMenuItem, Submenu, SubmenuBuilder};
 use tauri::{AppHandle, Emitter, Manager, Wry};
 
 /// The "Open Recent" submenu, so its items can be replaced at runtime.
@@ -30,6 +31,30 @@ pub fn set_recent(app: &AppHandle, paths: Vec<String>) -> tauri::Result<()> {
     sub.append(&PredefinedMenuItem::separator(app)?)?;
     sub.append(&MenuItemBuilder::with_id("recent:clear", "Clear Menu").build(app)?)?;
     Ok(())
+}
+
+fn apply_accelerators(items: Vec<MenuItemKind<Wry>>, accels: &HashMap<String, Option<String>>) -> tauri::Result<()> {
+    for it in items {
+        match it {
+            MenuItemKind::MenuItem(i) => {
+                if let Some(a) = accels.get(i.id().0.as_str()) {
+                    i.set_accelerator(a.as_deref())?;
+                }
+            }
+            MenuItemKind::Submenu(s) => apply_accelerators(s.items()?, accels)?,
+            _ => {}
+        }
+    }
+    Ok(())
+}
+
+/// Give menu items the shortcuts chosen in the app (command id → accelerator, or none). The defaults below are
+/// only what the menu shows until the first window has loaded; src/app/shortcuts.ts is the source of truth.
+pub fn set_accelerators(app: &AppHandle, accels: HashMap<String, Option<String>>) -> tauri::Result<()> {
+    match app.menu() {
+        Some(menu) => apply_accelerators(menu.items()?, &accels),
+        None => Ok(()),
+    }
 }
 
 fn item(app: &AppHandle, id: &str, label: &str, accel: Option<&str>) -> tauri::Result<tauri::menu::MenuItem<Wry>> {
@@ -81,6 +106,7 @@ pub fn build(app: &AppHandle) -> tauri::Result<Menu<Wry>> {
         .separator()
         .item(&import_menu)
         .item(&item(app, "exportGraph", "Export Graph…", Some("CmdOrCtrl+Shift+E"))?)
+        .item(&item(app, "exportAnimation", "Export Animation…", None)?)
         .item(&item(app, "exportCsv", "Export Sheet as CSV…", None)?)
         .separator()
         .item(&PredefinedMenuItem::close_window(app, Some("Close Window"))?)
@@ -101,7 +127,7 @@ pub fn build(app: &AppHandle) -> tauri::Result<Menu<Wry>> {
     let data = SubmenuBuilder::new(app, "Data")
         .item(&item(app, "newSheet", "New Sheet", Some("CmdOrCtrl+T"))?)
         .item(&item(app, "plot", "Plot Columns…", Some("CmdOrCtrl+P"))?)
-        .item(&item(app, "stats", "Column Statistics", None)?)
+        .item(&item(app, "stats", "Statistics", None)?)
         .separator()
         .item(&item(app, "addColumn", "Add Column", None)?)
         .item(&item(app, "sortAsc", "Sort Ascending", None)?)
@@ -110,18 +136,21 @@ pub fn build(app: &AppHandle) -> tauri::Result<Menu<Wry>> {
 
     let analysis = SubmenuBuilder::new(app, "Analysis")
         .item(&item(app, "fit", "Fit Curve…", Some("CmdOrCtrl+F"))?)
+        .item(&item(app, "compare", "Compare Groups…", None)?)
         .separator()
         .item(&item(app, "an:smooth", "Smooth…", None)?)
         .item(&item(app, "an:derivative", "Differentiate", None)?)
         .item(&item(app, "an:integrate", "Integrate", None)?)
         .item(&item(app, "an:normalize", "Normalize…", None)?)
+        .item(&item(app, "an:math", "Curve Math…", None)?)
         .item(&item(app, "an:fft", "FFT…", None)?)
+        .item(&item(app, "an:cdf", "Cumulative Distribution (CDF)…", None)?)
         .separator()
         .item(&item(app, "an:average", "Average Curves…", None)?)
         .item(&item(app, "an:interpolate", "Interpolate onto X…", None)?)
         .separator()
         .item(&item(app, "an:fill", "Fill Column With…", None)?)
-        .item(&item(app, "stats", "Column Statistics", None)?)
+        .item(&item(app, "stats", "Statistics", None)?)
         .build()?;
 
     let graph = SubmenuBuilder::new(app, "Graph")
@@ -134,8 +163,12 @@ pub fn build(app: &AppHandle) -> tauri::Result<Menu<Wry>> {
         .item(&item(app, "draw:arrow", "Draw Arrow", None)?)
         .item(&item(app, "draw:rect", "Draw Rectangle", None)?)
         .item(&item(app, "draw:ellipse", "Draw Ellipse", None)?)
+        .item(&item(app, "draw:bracket", "Draw Significance Bracket", None)?)
         .separator()
         .item(&item(app, "rescale", "Rescale Axes to Data", Some("CmdOrCtrl+R"))?)
+        .separator()
+        .item(&item(app, "animate", "Animate Figure", None)?)
+        .item(&item(app, "playAnimation", "Play or Pause Animation", None)?)
         .separator()
         .item(&item(app, "copySvg", "Copy as SVG", None)?)
         .item(&item(app, "copyPng", "Copy as PNG", None)?)
@@ -147,18 +180,26 @@ pub fn build(app: &AppHandle) -> tauri::Result<Menu<Wry>> {
         .item(&item(app, "toggleSidebar", "Toggle Sidebar", Some("CmdOrCtrl+Alt+S"))?)
         .item(&item(app, "toggleInspector", "Toggle Inspector", Some("CmdOrCtrl+Alt+I"))?)
         .separator()
-        .item(&item(app, "zoomIn", "Zoom In", Some("CmdOrCtrl+Plus"))?)
+        .item(&item(app, "zoomIn", "Zoom In", Some("CmdOrCtrl+="))?)
         .item(&item(app, "zoomOut", "Zoom Out", Some("CmdOrCtrl+-"))?)
         .item(&item(app, "zoomFit", "Zoom to Fit", Some("CmdOrCtrl+0"))?)
         .separator()
         .fullscreen()
         .build()?;
 
-    let window = SubmenuBuilder::new(app, "Window").minimize().maximize().separator().close_window().build()?;
+    let window = SubmenuBuilder::new(app, "Window")
+        .minimize()
+        .maximize()
+        .separator()
+        .item(&item(app, "appearance", "Appearance…", None)?)
+        .separator()
+        .close_window()
+        .build()?;
 
     let about_menu = SubmenuBuilder::new(app, "About")
         .item(&item(app, "about", &format!("About PlotFolio {}", env!("CARGO_PKG_VERSION")), None)?)
         .item(&item(app, "aiNotes", "Notes for AI Assistants…", None)?)
+        .item(&item(app, "shortcuts", "Shortcuts and Gestures…", None)?)
         .build()?;
 
     let menu = Menu::with_items(app, &[&app_menu, &file, &edit, &data, &analysis, &graph, &view, &window, &about_menu])?;

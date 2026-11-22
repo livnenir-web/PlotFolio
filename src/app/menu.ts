@@ -1,6 +1,9 @@
 import { useStore, undo, redo } from "../model/store";
+import { defaultLayer } from "../model/figure";
+import { toggleAnimationFromUi, usePlayback } from "../graph/animationPlayback";
 import { useDialogs } from "./dialogs";
 import { isTauri } from "../io/platform";
+import { formatKeys, IS_MAC } from "./menuModel";
 import { importViaDialog } from "../io/importFiles";
 import { openProject, saveProject } from "../io/project";
 import { exportSheetCsv } from "../export/csv";
@@ -13,6 +16,9 @@ import { requestQuit } from "./closeGuard";
 import { focusWindow, isBlankProject, openProjectWindow, windowForFile } from "./windows";
 import { clearRecent } from "../io/recent";
 import { insertImageIntoGraph, pickImageFile } from "../io/images";
+import { ANALYSIS_LABELS, type AnalysisOp } from "../analysis/ops";
+import { selectedPlotIds } from "../analysis/graphCurves";
+import { startCompare, startCurveAnalysis, startStatistics } from "../analysis/start";
 
 /** File > Import > Image…: pick a picture and place it on the given graph (on the selected layer when there is one). */
 export async function importImageOntoGraph(graphId: string): Promise<void> {
@@ -53,12 +59,20 @@ export async function guardedOpen(path?: string): Promise<void> {
   }
 }
 
+/** A command of a sheet was chosen with no sheet in front (the Mac menu bar cannot dim it): say so instead of doing nothing. */
+function needsSheet(command: string): void {
+  useDialogs.getState().showToast(`${command} works on a sheet: open the sheet with the data first.`);
+}
+
 function typingTarget(): boolean {
   const el = document.activeElement as HTMLElement | null;
   return !!el && (el.tagName === "INPUT" || el.tagName === "TEXTAREA" || el.isContentEditable);
 }
 
-/** Handle a native menu command (ids are defined in src-tauri/src/menu.rs). */
+/**
+ * Run a menu command. The ids come from the Mac menu bar (src-tauri/src/menu.rs), from the menus PlotFolio draws
+ * itself in the Windows app and the browser (menuModel.ts), and from the key handler (shortcutKeys.ts).
+ */
 export function handleMenu(id: string): void {
   const st = useStore.getState();
   const d = useDialogs.getState();
@@ -66,7 +80,7 @@ export function handleMenu(id: string): void {
   const graphId = tab?.kind === "graph" ? tab.id : null;
   const sheetId = tab?.kind === "sheet" ? tab.id : null;
   const graph = graphId ? st.project.graphs.find((g) => g.id === graphId) : undefined;
-  const selLayerId = "layerId" in st.ui.selection ? st.ui.selection.layerId : graph?.layers[0]?.id;
+  const selLayerId = "layerId" in st.ui.selection ? st.ui.selection.layerId : graph && defaultLayer(graph)?.id;
 
   if (id.startsWith("recent:")) {
     const p = id.slice(7);
@@ -87,6 +101,10 @@ export function handleMenu(id: string): void {
       break;
     case "quit":
       void requestQuit();
+      break;
+    case "closeWindow":
+      // the same as the window's own close button: the close guard asks about unsaved changes
+      if (isTauri()) void import("@tauri-apps/api/window").then(({ getCurrentWindow }) => getCurrentWindow().close());
       break;
     case "save":
       void saveProject(false);
@@ -110,6 +128,29 @@ export function handleMenu(id: string): void {
     case "exportGraph":
       if (graphId) d.setExportDialog({ graphId });
       break;
+    case "animate":
+      if (graphId) toggleAnimationFromUi(graphId);
+      break;
+    case "shortcuts":
+      d.setShortcutsOpen(true);
+      break;
+    // commands of the graph view itself (it knows the selection): see the "plotkit:graph" listener in GraphView
+    case "group":
+    case "ungroup":
+    case "duplicate":
+    case "animStepBack":
+    case "animStepForward":
+    case "animFirst":
+    case "animLast":
+      if (graphId) window.dispatchEvent(new CustomEvent("plotkit:graph", { detail: id }));
+      break;
+    case "playAnimation":
+    case "exportAnimation":
+      if (!graphId) break;
+      if (!graph?.animation?.enabled) d.showToast("This figure is not animated yet. Choose Graph ▸ Animate Figure first.");
+      else if (id === "playAnimation") usePlayback.getState().toggle(graphId);
+      else d.setAnimationExport({ graphId });
+      break;
     case "exportCsv": {
       const sheet = sheetId ? st.project.sheets.find((s) => s.id === sheetId) : undefined;
       if (sheet) void exportSheetCsv(sheet);
@@ -127,6 +168,7 @@ export function handleMenu(id: string): void {
       window.dispatchEvent(new KeyboardEvent("keydown", { key: "Delete", bubbles: true }));
       break;
     case "settings":
+    case "appearance": // Window ▸ Appearance…: the accent color and light / dark sit at the top of Settings
       d.setSettingsOpen(true);
       break;
     case "newSheet":
@@ -134,6 +176,7 @@ export function handleMenu(id: string): void {
       break;
     case "plot":
       if (sheetId) d.setPlotDialog({ sheetId });
+      else needsSheet("Plot Columns");
       break;
     case "an:smooth":
     case "an:derivative":
@@ -143,7 +186,22 @@ export function handleMenu(id: string): void {
     case "an:average":
     case "an:interpolate":
     case "an:fill":
-      if (sheetId) d.setAnalysis({ op: id.slice(3) as import("../analysis/AnalysisDialog").AnalysisOp, sheetId });
+    case "an:cdf":
+    case "an:math":
+    {
+      const op = id.slice(3) as AnalysisOp;
+      // from a graph: the command runs on its plots, the selected ones first (they may read different sheets)
+      if (graph && op !== "fill") startCurveAnalysis(op, graph.id, selectedPlotIds(st.ui.selection, st.ui.multi, graph.id));
+      else if (op === "math") d.showToast(sheetId ? "Curve Math works on the curves of a graph. In a sheet, type a formula for a column instead, for example B - C." : "Curve Math works on the curves of a graph: open the graph first.");
+      else if (sheetId) d.setAnalysis({ op, sheetId });
+      else needsSheet(op === "fill" ? "Fill Column With" : ANALYSIS_LABELS[op]);
+      break;
+    }
+    case "compare":
+      // from a sheet: its selected columns; from a graph: its plots, each one a group
+      if (sheetId) d.setCompare({ sheetId, colIds: sheetSelectionRef.sheetId === sheetId ? sheetSelectionRef.cols.map((i) => st.project.sheets.find((s) => s.id === sheetId)?.columns[i]?.id).filter((x): x is string => !!x) : undefined });
+      else if (graphId) startCompare(graphId, selectedPlotIds(st.ui.selection, st.ui.multi, graphId), selLayerId);
+      else needsSheet("Compare Groups");
       break;
     case "rescale":
       if (graphId)
@@ -152,14 +210,20 @@ export function handleMenu(id: string): void {
         });
       break;
     case "stats":
+      // from a sheet: a report sheet for its columns; from a graph: a table over the figure for its plots
       if (sheetId) columnStatistics(sheetId, sheetSelectionRef.sheetId === sheetId ? sheetSelectionRef.cols : []);
+      else if (graph) startStatistics(graph.id, selectedPlotIds(st.ui.selection, st.ui.multi, graph.id), selLayerId);
+      else needsSheet("Statistics");
       break;
     case "addColumn":
       if (sheetId) st.addColumn(sheetId);
+      else needsSheet("Add Column");
       break;
     case "sortAsc":
     case "sortDesc":
-      if (sheetId && sheetSelectionRef.cols[0] !== undefined) st.sortByColumn(sheetId, sheetSelectionRef.cols[0], id === "sortDesc");
+      if (!sheetId) needsSheet("Sort");
+      else if (sheetSelectionRef.cols[0] === undefined) d.showToast("Select the column to sort by first.");
+      else st.sortByColumn(sheetId, sheetSelectionRef.cols[0], id === "sortDesc");
       break;
     case "newGraph":
       st.addGraph();
@@ -177,6 +241,7 @@ export function handleMenu(id: string): void {
     case "draw:arrow":
     case "draw:rect":
     case "draw:ellipse":
+    case "draw:bracket":
       window.dispatchEvent(new CustomEvent("plotkit:draw", { detail: id.slice(5) }));
       break;
     case "fit":
@@ -198,7 +263,13 @@ export function handleMenu(id: string): void {
       editCommand(id);
       break;
     case "fullscreen":
-      if (document.fullscreenElement) void document.exitFullscreen();
+      // the Mac menu has its own full-screen item; this is the Windows app (the window) and the browser (the page)
+      if (isTauri())
+        void import("@tauri-apps/api/window").then(async ({ getCurrentWindow }) => {
+          const w = getCurrentWindow();
+          await w.setFullscreen(!(await w.isFullscreen()));
+        });
+      else if (document.fullscreenElement) void document.exitFullscreen();
       else void document.documentElement.requestFullscreen?.();
       break;
     case "toggleSidebar":
@@ -227,20 +298,20 @@ export async function installMenuListener(): Promise<() => void> {
 }
 
 /**
- * Edit menu in the browser build (the Mac app uses the native Cut/Copy/Paste items). Text fields get the browser's
+ * Edit menu of the menus PlotFolio draws itself (the Mac app uses the native Cut/Copy/Paste items). Text fields get the browser's
  * own editing commands; a graph gets the same keys its shortcuts use; the sheet grid gets real clipboard events.
  */
 function editCommand(cmd: "cut" | "copy" | "paste" | "selectAll"): void {
   const el = document.activeElement as HTMLElement | null;
   const toast = (m: string) => useDialogs.getState().showToast(m);
-  const mac = /Mac|iPhone|iPad/.test(navigator.platform || navigator.userAgent);
+  const mac = IS_MAC;
   const key = (k: string, target: EventTarget = window) =>
     target.dispatchEvent(new KeyboardEvent("keydown", { key: k, metaKey: mac, ctrlKey: !mac, bubbles: true, cancelable: true }));
   const readClipboard = async (): Promise<string | null> => {
     try {
       return await navigator.clipboard.readText();
     } catch {
-      toast(`The browser blocked reading the clipboard; press ${mac ? "⌘V" : "Ctrl+V"} instead`);
+      toast(`Reading the clipboard was blocked; press ${formatKeys("Mod+V")} instead`);
       return null;
     }
   };
@@ -272,6 +343,6 @@ function editCommand(cmd: "cut" | "copy" | "paste" | "selectAll"): void {
       return;
     }
     // copy / cut: a real clipboard event, which the grid answers with the selected cells
-    if (!document.execCommand(cmd)) toast(`Press ${mac ? (cmd === "cut" ? "⌘X" : "⌘C") : cmd === "cut" ? "Ctrl+X" : "Ctrl+C"} to ${cmd}`);
+    if (!document.execCommand(cmd)) toast(`Press ${formatKeys(cmd === "cut" ? "Mod+X" : "Mod+C")} to ${cmd}`);
   }
 }

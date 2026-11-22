@@ -137,8 +137,8 @@ export function FitPanel({ graphId, layerId, plotId }: { graphId: string; layerI
       <div className="panel-head">
         <Icon name="fit" size={14} />
         <span>Fit a curve</span>
-        <span className="hint" style={{ fontWeight: 400 }}>
-          {layer.name} · click a plot on the graph to fit it
+        <span className="hint" style={{ fontWeight: 400 }} title="Click a plot on the graph to fit it. Fit (preview) shows the parameters before the curve is added; initial values come from the data.">
+          {layer.name}
         </span>
         <span style={{ flex: 1 }} />
         {fitPlotIdDone && (
@@ -157,7 +157,7 @@ export function FitPanel({ graphId, layerId, plotId }: { graphId: string; layerI
         </button>
       </div>
       {candidates.length === 0 ? (
-        <div className="hint" style={{ padding: 12 }}>
+        <div className="note" style={{ padding: 12 }}>
           This layer has no XY data plots to fit.
         </div>
       ) : (
@@ -242,7 +242,6 @@ export function FitPanel({ graphId, layerId, plotId }: { graphId: string; layerI
               </div>
             )}
             {error && <div style={{ color: "var(--danger)", fontSize: 11.5 }}>{error}</div>}
-            {!outcome && !error && <div className="hint">Press Fit (preview) to see parameters before adding the curve. Initial values come from the data.</div>}
           </div>
         </div>
       )}

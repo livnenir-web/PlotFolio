@@ -41,6 +41,7 @@ export function FunctionDialog({ graphId, layerId }: { graphId: string; layerId:
   return (
     <Dialog
       title="Insert function"
+      info="Use x as the variable; functions like sin, cos, exp, log, log10, sqrt, abs, floor, and the constants pi and e."
       onClose={close}
       width={520}
       actions={
@@ -57,16 +58,15 @@ export function FunctionDialog({ graphId, layerId }: { graphId: string; layerId:
       <Row label="y =">
         <TextField value={expr} onCommit={setExpr} mono placeholder="sin(x)/x" />
       </Row>
-      {error ? <div style={{ color: "var(--danger)", fontSize: 11.5, marginLeft: 88 }}>{error}</div> : <div className="hint" style={{ marginLeft: 88 }}>Use x as the variable; functions like sin, cos, exp, log, log10, sqrt, abs, floor, and constants pi, e.</div>}
+      {error && <div style={{ color: "var(--danger)", fontSize: 11.5, marginLeft: 88 }}>{error}</div>}
       <Row label="Examples">
         <SelectField value="" options={[{ value: "", label: "Pick an example…" }, ...EXAMPLES.map((e) => ({ value: e, label: e }))]} onChange={(v) => v && setExpr(v)} />
       </Row>
       <Row label="Name">
         <TextField value={name} onCommit={setName} placeholder={expr} />
       </Row>
-      <Row label="Range">
+      <Row label="Range" title="Without a fixed range the curve follows the x axis">
         <CheckField label="Fixed x range" checked={useRange} onChange={setUseRange} />
-        <span className="hint">{useRange ? "" : "(follows the axis range)"}</span>
       </Row>
       {useRange && (
         <Row label="From · To">

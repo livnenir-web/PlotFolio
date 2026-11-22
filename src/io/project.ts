@@ -2,17 +2,20 @@ import type { Project, ProjectView } from "../model/types";
 import { PROJECT_VERSION, defaultGraphDefaults } from "../model/defaults";
 import { useStore } from "../model/store";
 import { addRecent, removeRecent } from "./recent";
+import { linkBrackets } from "../model/brackets";
 import {
   appDataDir,
   baseName,
   browserPickFiles,
   ensureDir,
   isTauri,
+  joinPath,
   pickOpenFile,
   pickSaveFile,
   readText,
   saveTextAs,
   setWindowTitle,
+  shell,
   stripExt,
   writeText,
 } from "./platform";
@@ -39,6 +42,10 @@ function parseProject(raw: Partial<Project>): Project {
   const defaults = { ...defaultGraphDefaults(), ...(raw.defaults ?? {}) };
   // older files: log10 axes had no minor-tick control; keep their classic 2…9 marks
   for (const g of raw.graphs) for (const l of g.layers ?? []) for (const a of Object.values(l.axes ?? {})) if (a && a.scale === "log" && a.minorCount === 1) a.minorCount = 8;
+  // before version 2, 3D scatters always drew their symbols while `showMarkers` was false: keep them visible
+  if ((raw.version ?? 1) < 2) for (const g of raw.graphs) for (const l of g.layers ?? []) for (const p of l.plots ?? []) if (p.type === "scatter3d") p.showMarkers = true;
+  // brackets made before they knew their two plots: link each to the groups it stands over
+  for (const g of raw.graphs) for (const l of g.layers ?? []) if (l.plots) linkBrackets(l);
   return {
     id: raw.id ?? "project",
     name: raw.name ?? "Untitled",
@@ -110,7 +117,7 @@ async function viewsPath(): Promise<string | null> {
   const dir = await appDataDir();
   if (!dir) return null;
   await ensureDir(dir);
-  return `${dir}/views.json`;
+  return joinPath(dir, "views.json");
 }
 async function readViews(): Promise<Record<string, ProjectView>> {
   try {
@@ -164,7 +171,10 @@ export function installViewMemory(): void {
 
 export async function updateTitle() {
   const st = useStore.getState();
-  await setWindowTitle(`${st.project.name}${st.dirty ? " — Edited" : ""}`);
+  // the Windows title bar shows this text (the Mac app and the browser draw the name in the toolbar row instead):
+  // name first, then the app, with a star for unsaved changes, as Windows programs do
+  if (shell() === "windows") await setWindowTitle(`${st.dirty ? "*" : ""}${st.project.name} - PlotFolio`);
+  else await setWindowTitle(`${st.project.name}${st.dirty ? " — Edited" : ""}`);
 }
 
 // ---- autosave / recovery -------------------------------------------------
@@ -179,7 +189,7 @@ async function autosavePath(): Promise<string | null> {
   await ensureDir(dir);
   const { currentLabel } = await import("../app/windows");
   const label = await currentLabel();
-  return label === "main" ? `${dir}/autosave.plotproj` : `${dir}/autosave-${label}.plotproj`;
+  return joinPath(dir, label === "main" ? "autosave.plotproj" : `autosave-${label}.plotproj`);
 }
 
 /** Autosave files of other windows from the last session (for recovery in new windows). */
@@ -192,7 +202,7 @@ export async function otherAutosaves(): Promise<string[]> {
     const own = await autosavePath();
     return (await readDir(dir))
       .filter((e) => e.isFile && /^autosave-.*\.plotproj$/.test(e.name))
-      .map((e) => `${dir}/${e.name}`)
+      .map((e) => joinPath(dir, e.name))
       .filter((p) => p !== own);
   } catch {
     return [];

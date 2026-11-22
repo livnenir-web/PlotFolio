@@ -20,6 +20,11 @@ import {
 import type { PlotSource, PlotType, Shape, ShapeKind } from "./types";
 import { defaultMatrixSource } from "../graph/matrix";
 import { recalculateSheet, sheetRowCount } from "../formula/engine";
+import { stepPlot, tidyGroups } from "./plotGroups";
+import { dropOrphanBrackets } from "./brackets";
+import { renewPlotIds } from "./figure";
+import { excludeRows, includeRows, type ExcludeResult } from "./exclude";
+import { CANVAS_MARGIN_MM, layoutGraph } from "../graph/layout";
 
 export interface CellEdit {
   col: number;
@@ -67,7 +72,11 @@ export interface AppState {
   openTab: (tab: TabRef) => void;
   closeTab: (tab: TabRef) => void;
   setActiveTab: (tab: TabRef | null) => void;
+  /** Put an open tab just before or after another one (dragging in the tab bar). */
+  moveTab: (tab: TabRef, target: TabRef, after: boolean) => void;
   setSelection: (sel: Selection) => void;
+  /** Select several objects at once: `primary` is shown in the inspector, edits reach the others as well. */
+  selectMany: (primary: Selection, others: Selection[]) => void;
   toggleSidebar: () => void;
   toggleInspector: () => void;
   setInspectorCollapsed: (v: boolean) => void;
@@ -87,6 +96,10 @@ export interface AppState {
   setAllFoldersCollapsed: (collapsed: boolean, parentId?: string | null) => void;
   moveToFolder: (item: TabRef, folderId: string | null) => void;
   moveFolder: (id: string, parentId: string | null) => void;
+  /** Put a sheet or graph just before or after another of its kind in the project list, in that one's folder. */
+  placeItem: (item: TabRef, refId: string, after: boolean) => void;
+  /** Put a folder just before or after another folder, inside that one's parent. */
+  placeFolder: (id: string, refId: string, after: boolean) => void;
   /** folder that new sheets/graphs are created in */
   setCurrentFolder: (id: string | null) => void;
   setMulti: (items: Selection[]) => void;
@@ -122,15 +135,29 @@ export interface AppState {
   renameGraph: (id: string, name: string) => void;
   deleteGraph: (id: string) => void;
   duplicateGraph: (id: string) => void;
+  /**
+   * A new figure holding copies of these layers of a graph (with their texts, shapes, legends and curve groups),
+   * moved to the top-left corner of a canvas that fits them. With `plotIds`, only those plots are copied.
+   * Returns the id of the new graph.
+   */
+  copyToNewGraph: (graphId: string, layerIds: string[], plotIds?: string[]) => string;
   updateGraph: (graphId: string, fn: (g: Graph) => void) => void;
   updateLayer: (graphId: string, layerId: string, fn: (l: Layer) => void) => void;
   updateAxis: (graphId: string, layerId: string, axis: "x" | "y" | "y2" | "z", fn: (a: Axis) => void) => void;
   updatePlot: (graphId: string, layerId: string, plotId: string, fn: (p: Plot) => void) => void;
   addLayer: (graphId: string, layer?: Layer) => string;
+  /** Change the drawing order of the layers: the layer at `from` ends at index `to` (later = on top). */
+  moveLayer: (graphId: string, from: number, to: number) => void;
   deleteLayer: (graphId: string, layerId: string) => void;
   deletePlot: (graphId: string, layerId: string, plotId: string) => void;
   /** y = f(x) curve following the axis range. Returns the plot id. */
   addFunctionPlot: (graphId: string, layerId: string | "new", expression: string, name?: string) => string;
+  /**
+   * Exclude the points of a plot on these sheet rows: their values move to an "(excluded)" column of the same sheet,
+   * drawn as a plot of its own. `includePoints` moves them back. One undo step each. See src/model/exclude.ts.
+   */
+  excludePoints: (graphId: string, layerId: string, plotId: string, rows: number[]) => ExcludeResult;
+  includePoints: (graphId: string, layerId: string, plotId: string, rows: number[] | "all") => ExcludeResult;
   addShape: (graphId: string, layerId: string, kind: ShapeKind, x1: number, y1: number, x2: number, y2: number, extra?: Partial<Shape>) => string;
   updateShape: (graphId: string, layerId: string, shapeId: string, fn: (s: Shape) => void) => void;
   deleteShape: (graphId: string, layerId: string, shapeId: string) => void;
@@ -138,13 +165,15 @@ export interface AppState {
   movePlot: (graphId: string, layerId: string, plotId: string, delta: 1 | -1 | "front" | "back") => void;
   moveShape: (graphId: string, layerId: string, shapeId: string, delta: 1 | -1 | "front" | "back") => void;
   /** Add any plot type to a layer; converts the layer to 3D for surface/scatter3d. Returns the plot id. */
-  addPlot: (graphId: string, layerId: string | "new", type: PlotType, source: PlotSource, name?: string) => string;
+  /** `apply` adjusts the new plot before it is added (e.g. a box plot drawn as a violin) */
+  addPlot: (graphId: string, layerId: string | "new", type: PlotType, source: PlotSource, name?: string, apply?: (p: Plot) => void) => string;
   plotColumns: (
     sheetId: string,
     yColIds: string[],
     xColId: string | null,
     target: { graphId: string; layerId: string } | null,
     type?: Plot["type"],
+    apply?: (p: Plot) => void,
   ) => string;
 }
 
@@ -174,6 +203,11 @@ function ensureRows(col: Column, rows: number) {
 
 function clone<T>(v: T): T {
   return JSON.parse(JSON.stringify(v));
+}
+/** Curve groups follow every edit of a graph (membership, order, colors); figures without groups pay nothing. */
+function tidy(g: Graph): void {
+  if (g.plotGroups?.length) tidyGroups(g);
+  dropOrphanBrackets(g);
 }
 
 export function columnDisplayName(col: Column, index: number): string {
@@ -262,14 +296,17 @@ export const useStore = create<AppState>()(
         },
         setProjectName: (name) => mutate((p) => void (p.name = name)),
 
-        openTab: (tab) =>
+        openTab: (tab) => {
+          endEdit();
           set((s) => {
             if (!s.ui.openTabs.some((t) => sameTab(t, tab))) s.ui.openTabs.push(tab);
             s.ui.activeTab = tab;
             if (tab.kind === "graph") s.ui.selection = { kind: "canvas", graphId: tab.id };
             else s.ui.selection = { kind: "none" };
-          }),
-        closeTab: (tab) =>
+          });
+        },
+        closeTab: (tab) => {
+          endEdit();
           set((s) => {
             const idx = s.ui.openTabs.findIndex((t) => sameTab(t, tab));
             if (idx < 0) return;
@@ -279,13 +316,36 @@ export const useStore = create<AppState>()(
               s.ui.activeTab = next;
               s.ui.selection = next?.kind === "graph" ? { kind: "canvas", graphId: next.id } : { kind: "none" };
             }
+          });
+        },
+        moveTab: (tab, target, after) =>
+          set((s) => {
+            const tabs = s.ui.openTabs;
+            const i = tabs.findIndex((t) => sameTab(t, tab));
+            if (i < 0 || sameTab(tab, target)) return;
+            const [t] = tabs.splice(i, 1);
+            const j = tabs.findIndex((x) => sameTab(x, target));
+            tabs.splice(j < 0 ? i : j + (after ? 1 : 0), 0, t);
           }),
-        setActiveTab: (tab) =>
+        setActiveTab: (tab) => {
+          endEdit();
           set((s) => {
             s.ui.activeTab = tab;
             s.ui.selection = tab?.kind === "graph" ? { kind: "canvas", graphId: tab.id } : { kind: "none" };
-          }),
-        setSelection: (sel) => set((s) => void (s.ui.selection = sel)),
+          });
+        },
+        // a field that is still being edited is finished first, so its value goes to the object it belongs to
+        setSelection: (sel) => {
+          endEdit();
+          set((s) => void (s.ui.selection = sel));
+        },
+        selectMany: (primary, others) => {
+          endEdit();
+          set((s) => {
+            s.ui.selection = primary;
+            s.ui.multi = others;
+          });
+        },
         setMulti: (items) => set((s) => void (s.ui.multi = items)),
         groupObjects: (graphId, members) => {
           const id = uid();
@@ -358,6 +418,29 @@ export const useStore = create<AppState>()(
               if (g) g.folderId = folderId;
             }
           }),
+        placeItem: (item, refId, after) =>
+          mutate((p) => {
+            if (item.id === refId) return;
+            const list: { id: string; folderId?: string | null }[] = item.kind === "sheet" ? p.sheets : p.graphs;
+            const i = list.findIndex((x) => x.id === item.id);
+            const ref = list.find((x) => x.id === refId);
+            if (i < 0 || !ref) return;
+            const [x] = list.splice(i, 1);
+            x.folderId = ref.folderId ?? null;
+            list.splice(list.indexOf(ref) + (after ? 1 : 0), 0, x);
+          }),
+        placeFolder: (id, refId, after) =>
+          mutate((p) => {
+            const folders = p.folders ?? [];
+            const ref = folders.find((f) => f.id === refId);
+            const i = folders.findIndex((f) => f.id === id);
+            if (i < 0 || !ref || id === refId) return;
+            // not next to a folder that is inside the moved one
+            for (let cur: string | null = ref.parentId; cur; cur = folders.find((f) => f.id === cur)?.parentId ?? null) if (cur === id) return;
+            const [f] = folders.splice(i, 1);
+            f.parentId = ref.parentId;
+            folders.splice(folders.indexOf(ref) + (after ? 1 : 0), 0, f);
+          }),
         moveFolder: (id, parentId) =>
           mutate((p) => {
             if (id === parentId) return;
@@ -400,7 +483,12 @@ export const useStore = create<AppState>()(
           if (!src) return;
           const copy = clone(src);
           copy.id = uid();
-          copy.columns.forEach((c) => (c.id = uid()));
+          // columns of excluded points keep pointing at their column, in the copy
+          const newId = new Map(copy.columns.map((c) => [c.id, uid()]));
+          copy.columns.forEach((c) => {
+            c.id = newId.get(c.id)!;
+            if (c.excludedFrom) c.excludedFrom = newId.get(c.excludedFrom) ?? undefined;
+          });
           copy.name = uniqueName(src.name + " copy", get().project.sheets.map((s) => s.name));
           mutate((p) => void p.sheets.push(copy));
           get().openTab({ kind: "sheet", id: copy.id });
@@ -550,14 +638,87 @@ export const useStore = create<AppState>()(
           copy.id = uid();
           copy.layers.forEach((l) => {
             l.id = uid();
-            l.plots.forEach((pl) => (pl.id = uid()));
+            renewPlotIds(l, uid);
           });
           copy.name = uniqueName(src.name + " copy", get().project.graphs.map((g) => g.name));
           mutate((p) => void p.graphs.push(copy));
           get().openTab({ kind: "graph", id: copy.id });
         },
-        updateGraph: (graphId, fn) => mutate((p) => fn(graphOf(p, graphId))),
-        updateLayer: (graphId, layerId, fn) => mutate((p) => fn(layerOf(graphOf(p, graphId), layerId))),
+        copyToNewGraph: (graphId, layerIds, plotIds) => {
+          const state = get();
+          const src = state.project.graphs.find((g) => g.id === graphId);
+          if (!src) throw new Error("Graph not found");
+          const picked = new Set(layerIds);
+          const only = plotIds ? new Set(plotIds) : null;
+          const layers: Layer[] = clone(src.layers.filter((l) => picked.has(l.id)));
+          for (const l of layers) {
+            if (only) l.plots = l.plots.filter((pl) => only.has(pl.id));
+            l.id = uid();
+            renewPlotIds(l, uid);
+            l.shapes?.forEach((sh) => (sh.id = uid()));
+            l.texts.forEach((t) => (t.id = uid()));
+          }
+          const usedGroups = new Set(layers.flatMap((l) => l.plots.map((pl) => pl.groupId)));
+          const groups = clone((src.plotGroups ?? []).filter((g) => usedGroups.has(g.id)));
+          for (const g of groups) {
+            delete g.shownIds;
+            // single curves taken out of a group keep the colors they have (a gradient over fewer curves would change them)
+            if (only) delete g.colors;
+          }
+          const name = layers.length === 1 && src.layers.length > 1 ? `${src.name} – ${layers[0].name}` : `${src.name} copy`;
+          const graph: Graph = {
+            id: uid(),
+            name: uniqueName(name, state.project.graphs.map((g) => g.name)),
+            canvas: { ...src.canvas, autoHeight: true },
+            layers,
+            folderId: src.folderId,
+            ...(groups.length ? { plotGroups: groups } : {}),
+          };
+          // move the content to the top-left corner and fit the canvas around it
+          const box = layoutGraph(state.project, graph).content;
+          if (Number.isFinite(box.x0) && Number.isFinite(box.y0) && box.x1 > box.x0) {
+            // whole half millimeters, so the frames keep round positions
+            const dx = Math.ceil((CANVAS_MARGIN_MM - box.x0) * 2) / 2;
+            const dy = Math.ceil((CANVAS_MARGIN_MM - box.y0) * 2) / 2;
+            for (const l of layers) {
+              l.frame.xMm += dx;
+              l.frame.yMm += dy;
+              for (const t of l.texts)
+                if (t.coord !== "data") {
+                  t.xMm += dx;
+                  t.yMm += dy;
+                }
+              for (const sh of l.shapes ?? [])
+                if (sh.coord !== "data") {
+                  sh.x1 += dx;
+                  sh.x2 += dx;
+                  sh.y1 += dy;
+                  sh.y2 += dy;
+                  sh.points?.forEach((pt) => {
+                    pt.x += dx;
+                    pt.y += dy;
+                  });
+                }
+            }
+            graph.canvas.widthMm = Math.max(20, Math.ceil((box.x1 + dx + CANVAS_MARGIN_MM) * 2) / 2);
+          }
+          tidyGroups(graph);
+          mutate((p) => void p.graphs.push(graph));
+          get().openTab({ kind: "graph", id: graph.id });
+          return graph.id;
+        },
+        updateGraph: (graphId, fn) =>
+          mutate((p) => {
+            const g = graphOf(p, graphId);
+            fn(g);
+            tidy(g);
+          }),
+        updateLayer: (graphId, layerId, fn) =>
+          mutate((p) => {
+            const g = graphOf(p, graphId);
+            fn(layerOf(g, layerId));
+            tidy(g);
+          }),
         updateAxis: (graphId, layerId, axis, fn) =>
           mutate((p) => {
             const l = layerOf(graphOf(p, graphId), layerId);
@@ -566,8 +727,17 @@ export const useStore = create<AppState>()(
           }),
         updatePlot: (graphId, layerId, plotId, fn) =>
           mutate((p) => {
-            const pl = layerOf(graphOf(p, graphId), layerId).plots.find((x) => x.id === plotId);
+            const g = graphOf(p, graphId);
+            const pl = layerOf(g, layerId).plots.find((x) => x.id === plotId);
             if (pl) fn(pl);
+            tidy(g);
+          }),
+        moveLayer: (graphId, from, to) =>
+          mutate((p) => {
+            const g = graphOf(p, graphId);
+            if (from < 0 || from >= g.layers.length) return;
+            const [l] = g.layers.splice(from, 1);
+            g.layers.splice(Math.max(0, Math.min(g.layers.length, to)), 0, l);
           }),
         addLayer: (graphId, layer) => {
           const d = get().project.defaults;
@@ -576,7 +746,7 @@ export const useStore = create<AppState>()(
           if (layer) {
             l = clone(layer);
             l.id = uid();
-            l.plots.forEach((pl) => (pl.id = uid()));
+            renewPlotIds(l, uid);
             l.frame = { ...l.frame, xMm: l.frame.xMm + 5, yMm: l.frame.yMm + 5 };
           } else {
             // stack below the lowest existing layer (room for tick labels and the x title)
@@ -587,13 +757,19 @@ export const useStore = create<AppState>()(
             });
           }
           l.name = uniqueName(l.name, g.layers.map((x) => x.name));
-          mutate((p) => void graphOf(p, graphId).layers.push(l));
+          mutate((p) => {
+            const gr = graphOf(p, graphId);
+            gr.layers.push(l);
+            // a copied layer keeps its curves in their groups; one from another figure leaves groups this figure lacks
+            tidyGroups(gr);
+          });
           return l.id;
         },
         deleteLayer: (graphId, layerId) =>
           mutate((p) => {
             const g = graphOf(p, graphId);
             g.layers = g.layers.filter((l) => l.id !== layerId);
+            tidy(g);
           }),
         addGraphItems: (graphId, layers, shapes, texts) =>
           mutate((p) => {
@@ -601,18 +777,48 @@ export const useStore = create<AppState>()(
             g.layers.push(...layers);
             for (const { layerId, shape } of shapes) (layerOf(g, layerId).shapes ??= []).push(shape);
             for (const { layerId, text } of texts) layerOf(g, layerId).texts.push(text);
+            if (layers.length) tidyGroups(g);
           }),
         deleteLayers: (graphId, layerIds) =>
           mutate((p) => {
             const g = graphOf(p, graphId);
             const ids = new Set(layerIds);
             g.layers = g.layers.filter((l) => !ids.has(l.id));
+            tidy(g);
           }),
         deletePlot: (graphId, layerId, plotId) =>
           mutate((p) => {
-            const l = layerOf(graphOf(p, graphId), layerId);
+            const g = graphOf(p, graphId);
+            const l = layerOf(g, layerId);
             l.plots = l.plots.filter((x) => x.id !== plotId);
+            tidy(g);
           }),
+        excludePoints: (graphId, layerId, plotId, rows) => {
+          let res: ExcludeResult = { moved: 0 };
+          mutate((p) => {
+            res = excludeRows(p, graphId, layerId, plotId, rows);
+            if (!res.moved) return;
+            const plot = layerOf(graphOf(p, graphId), layerId).plots.find((x) => x.id === plotId);
+            // formulas that read the column follow
+            if (plot) recalculateSheet(sheetOf(p, plot.source.sheetId));
+            tidy(graphOf(p, graphId));
+          });
+          return res;
+        },
+        includePoints: (graphId, layerId, plotId, rows) => {
+          let res: ExcludeResult = { moved: 0 };
+          const sheetId = get().project.graphs.find((g) => g.id === graphId)?.layers.find((l) => l.id === layerId)?.plots.find((x) => x.id === plotId)?.source.sheetId;
+          mutate((p) => {
+            res = includeRows(p, graphId, layerId, plotId, rows);
+            if (!res.moved) return;
+            if (sheetId) recalculateSheet(sheetOf(p, sheetId));
+            for (const g of p.graphs) tidy(g);
+          });
+          // the plot of the excluded points is gone with its last point: select the plot they went back to
+          const to = (res as ExcludeResult).select;
+          if (to) get().setSelection(to.plotId ? { kind: "plot", graphId, layerId: to.layerId, plotId: to.plotId } : { kind: "layer", graphId, layerId: to.layerId });
+          return res;
+        },
         addFunctionPlot: (graphId, layerIdIn, expression, name) => {
           const state = get();
           const layerId = layerIdIn === "new" ? state.addLayer(graphId) : layerIdIn;
@@ -639,7 +845,7 @@ export const useStore = create<AppState>()(
           return plotId;
         },
         addShape: (graphId, layerId, kind, x1, y1, x2, y2, extra) => {
-          const sh = { ...newShape(kind, x1, y1, x2, y2), ...(extra ?? {}) };
+          const sh = { ...newShape(kind, x1, y1, x2, y2), ...(kind === "bracket" ? { labelStyle: { ...get().project.defaults.tickLabel } } : {}), ...(extra ?? {}) };
           mutate((p) => {
             const l = layerOf(graphOf(p, graphId), layerId);
             (l.shapes ??= []).push(sh);
@@ -653,8 +859,12 @@ export const useStore = create<AppState>()(
           }),
         movePlot: (graphId, layerId, plotId, delta) =>
           mutate((p) => {
-            const l = layerOf(graphOf(p, graphId), layerId);
-            reorder(l.plots, l.plots.findIndex((x) => x.id === plotId), delta);
+            const g = graphOf(p, graphId);
+            const l = layerOf(g, layerId);
+            // with curve groups, one step moves a curve within its group and other plots past a whole group
+            if (g.plotGroups?.length && (delta === 1 || delta === -1)) stepPlot(g, l, plotId, delta);
+            else reorder(l.plots, l.plots.findIndex((x) => x.id === plotId), delta);
+            tidy(g);
           }),
         moveShape: (graphId, layerId, shapeId, delta) =>
           mutate((p) => {
@@ -666,7 +876,7 @@ export const useStore = create<AppState>()(
             const l = layerOf(graphOf(p, graphId), layerId);
             l.shapes = (l.shapes ?? []).filter((x) => x.id !== shapeId);
           }),
-        addPlot: (graphId, layerIdIn, type, source, name) => {
+        addPlot: (graphId, layerIdIn, type, source, name, apply) => {
           const state = get();
           const d = state.project.defaults;
           const layerId = layerIdIn === "new" ? state.addLayer(graphId) : layerIdIn;
@@ -682,6 +892,7 @@ export const useStore = create<AppState>()(
             const zIdx = sheet ? sheet.columns.findIndex((c) => c.id === src.zColId) : -1;
             const label = name ?? (isMatrix ? (src.matrix?.mode === "xyz" && zIdx >= 0 ? columnDisplayName(sheet!.columns[zIdx], zIdx) : sheet?.name ?? "Matrix") : yIdx >= 0 ? columnDisplayName(sheet!.columns[yIdx], yIdx) : "Plot");
             const plot = newPlot(d, l, src, label, type);
+            apply?.(plot);
             plotId = plot.id;
             if (type === "surface3d" || type === "scatter3d") {
               make3D(d, l);
@@ -718,7 +929,7 @@ export const useStore = create<AppState>()(
           get().setSelection({ kind: "plot", graphId, layerId, plotId });
           return plotId;
         },
-        plotColumns: (sheetId, yColIds, xColId, target, type = "scatter") => {
+        plotColumns: (sheetId, yColIds, xColId, target, type = "scatter", apply) => {
           const state = get();
           const d = state.project.defaults;
           const sheet = state.project.sheets.find((s) => s.id === sheetId);
@@ -732,7 +943,7 @@ export const useStore = create<AppState>()(
             layerId = get().addLayer(graphId);
           }
           if (type === "heatmap" || type === "contour" || type === "surface3d" || type === "scatter3d" || type === "bar" || type === "box") {
-            for (const yId of yColIds) get().addPlot(graphId, layerId!, type, { sheetId, xColId, yColId: yId });
+            for (const yId of yColIds) get().addPlot(graphId, layerId!, type, { sheetId, xColId, yColId: yId }, undefined, apply);
             return graphId;
           }
           mutate((p) => {
@@ -748,12 +959,16 @@ export const useStore = create<AppState>()(
               const next = sheet.columns[yIdx + 1];
               const yErrColId = next && next.designation === "yErr" ? next.id : null;
               const plot = newPlot(d, l, { sheetId, xColId: xColId, yColId: yId, yErrColId }, columnDisplayName(yCol, yIdx), type);
+              apply?.(plot);
               l.plots.push(plot);
               l.nextColorIndex++;
               if (l.plots.length === 1) {
                 if (type === "histogram") {
-                  l.axes.x.title = axisTitleFor(yCol, yIdx);
-                  l.axes.y.title = "Count";
+                  // several columns share the axis: name it after what they hold, not after the first of them
+                  l.axes.x.title = yColIds.length > 1 ? (yCol.units ? `Value (${yCol.units})` : "Value") : axisTitleFor(yCol, yIdx);
+                  l.axes.y.title = plot.histogram?.display === "cdf" ? "Cumulative fraction" : "Count";
+                  // cumulative curves end in the top-right corner: the legend goes to the bottom right, which they leave free
+                  if (plot.histogram?.display === "cdf") Object.assign(l.legend, { xMm: Math.round(l.frame.wMm * 0.5), yMm: Math.round((l.frame.hMm - 2.5 - 3.4 * yColIds.length) * 2) / 2 });
                 } else {
                   if (xCol) l.axes.x.title = axisTitleFor(xCol, xIdx);
                   l.axes.y.title = axisTitleFor(yCol, yIdx);
@@ -783,7 +998,7 @@ function reorder<T>(arr: T[], i: number, delta: 1 | -1 | "front" | "back"): void
   arr.splice(j, 0, item);
 }
 
-function axisTitleFor(col: Column, idx: number): string {
+export function axisTitleFor(col: Column, idx: number): string {
   const name = columnDisplayName(col, idx);
   return col.units.trim() ? `${name} (${col.units.trim()})` : name;
 }
@@ -810,7 +1025,66 @@ export function useStoreEq<T>(selector: (s: AppState) => T, eq: (a: T, b: T) => 
   });
 }
 
-export const undo = () => useStore.temporal.getState().undo();
-export const redo = () => useStore.temporal.getState().redo();
-export const pauseHistory = () => useStore.temporal.getState().pause();
+export const undo = () => {
+  endEdit();
+  useStore.temporal.getState().undo();
+};
+export const redo = () => {
+  endEdit();
+  useStore.temporal.getState().redo();
+};
+/** For a drag: its steps are applied with history paused and recorded as one at the end. */
+export const pauseHistory = () => {
+  endEdit();
+  useStore.temporal.getState().pause();
+};
 export const resumeHistory = () => useStore.temporal.getState().resume();
+
+// A field of the inspector that is being edited: every keystroke is applied with history paused, and the edit
+// becomes one undo step when it ends. Only one can be open, and whatever moves on (another selection or tab, a
+// drag, undo) ends it first: the value then lands on the object it was typed for, and history is never left paused.
+let openEdit: { end: () => boolean | void; start: Project } | null = null;
+
+/**
+ * Start a field edit. `end` is called once when the edit finishes, with history still paused: it applies what is
+ * left to apply and returns false to throw the edit away (Escape, text that is no number).
+ */
+export function beginEdit(end: () => boolean | void): void {
+  endEdit();
+  openEdit = { end, start: useStore.getState().project };
+  useStore.temporal.getState().pause();
+}
+/** Several store calls recorded as one undo step (a command that adds columns and then plots them, say). */
+export function oneUndoStep<T>(fn: () => T): T {
+  endEdit();
+  const history = useStore.temporal.getState();
+  const start = useStore.getState().project;
+  history.pause();
+  try {
+    return fn();
+  } finally {
+    const final = useStore.getState().project;
+    if (final === start) history.resume();
+    else {
+      // history sees the project as it was before the command, then as it is now
+      useStore.setState({ project: start });
+      history.resume();
+      useStore.setState({ project: final });
+    }
+  }
+}
+
+/** Finish the open field edit, if any. Pass the edit's own `end` to finish it only if it is still the open one. */
+export function endEdit(own?: () => boolean | void): void {
+  const e = openEdit;
+  if (!e || (own && own !== e.end)) return;
+  openEdit = null;
+  const keep = e.end() !== false;
+  const history = useStore.temporal.getState();
+  const final = useStore.getState().project;
+  if (final === e.start) return history.resume();
+  // one undo step: history sees the project as it was before the edit, then as it is now
+  useStore.setState({ project: e.start });
+  history.resume();
+  if (keep) useStore.setState({ project: final });
+}

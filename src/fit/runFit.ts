@@ -71,7 +71,7 @@ export function computeFit(project: Project, req: Omit<FitRequest, "graphId" | "
     const auto = data.x.length >= 2 ? def.guess(data.x, data.y) : guess;
     const last = auto.length - 1;
     const variants: number[][] = [auto, auto.map((g, i) => (i === last ? g * 3 : g)), auto.map((g, i) => (i === last ? g / 3 : g)), auto.map((g, i) => (i === last ? g * 10 : g)), auto.map((g, i) => (i === last ? g / 10 : g))];
-    // peak-type functions: also try the opposite extremum as the centre
+    // peak-type functions: also try the opposite extremum as the center
     const xcIdx = def.params.indexOf("xc");
     if (xcIdx >= 0 && data.x.length) {
       const iMax = data.y.indexOf(Math.max(...data.y));

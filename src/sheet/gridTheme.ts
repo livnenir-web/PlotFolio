@@ -1,20 +1,21 @@
 import { useEffect, useState } from "react";
 import type { Theme } from "@glideapps/glide-data-grid";
+import { useAppearance } from "../app/appearance";
 
 function cssVar(name: string): string {
   return getComputedStyle(document.documentElement).getPropertyValue(name).trim();
 }
 
 export function computeGridTheme(): Partial<Theme> {
-  const dark = window.matchMedia("(prefers-color-scheme: dark)").matches;
+  const dark = useAppearance.getState().dark;
   return {
-    accentColor: cssVar("--accent") || "#007aff",
-    accentLight: cssVar("--accent-bg") || "rgba(0,122,255,0.14)",
+    accentColor: cssVar("--accent") || "#2b6fd6",
+    accentLight: cssVar("--accent-bg") || "rgba(43,111,214,0.13)",
     textDark: cssVar("--text") || "#1d1d1f",
     textMedium: cssVar("--text-2") || "#6e6e73",
     textLight: cssVar("--text-3") || "#a8a8ad",
     textHeader: cssVar("--text-2") || "#6e6e73",
-    textHeaderSelected: "#ffffff",
+    textHeaderSelected: cssVar("--accent-text") || "#ffffff",
     bgCell: cssVar("--bg") || "#ffffff",
     bgCellMedium: cssVar("--bg-2") || "#f5f5f7",
     bgHeader: cssVar("--bg-2") || "#f5f5f7",
@@ -38,12 +39,10 @@ export function computeGridTheme(): Partial<Theme> {
 }
 
 export function useGridTheme(): Partial<Theme> {
+  // the colors come from the page's CSS variables: read them again whenever the appearance changes
+  const dark = useAppearance((s) => s.dark);
+  const accent = useAppearance((s) => s.accent);
   const [theme, setTheme] = useState<Partial<Theme>>(() => computeGridTheme());
-  useEffect(() => {
-    const mq = window.matchMedia("(prefers-color-scheme: dark)");
-    const update = () => setTheme(computeGridTheme());
-    mq.addEventListener("change", update);
-    return () => mq.removeEventListener("change", update);
-  }, []);
+  useEffect(() => setTheme(computeGridTheme()), [dark, accent]);
   return theme;
 }

@@ -1,12 +1,15 @@
-import type { LineConnect, LineOptions } from "../model/types";
+import type { LineConnect, LineEnd, LineOptions, Shape } from "../model/types";
 import { fmtMm, ptToMm } from "./units";
 
 export type Pt = [number, number] | null;
 
 const f = fmtMm;
 
-/** Build an SVG path through the points (mm). Null entries break the line (axis gaps, missing data). */
-export function linePath(points: Pt[], connect: LineConnect = "straight"): string {
+/**
+ * Build an SVG path through the points (mm). Null entries break the line (axis gaps, missing data).
+ * `smoothing` (0…1, default 1) sets how far a "spline" line bends: 0 is straight segments, 1 the full spline.
+ */
+export function linePath(points: Pt[], connect: LineConnect = "straight", smoothing = 1): string {
   const runs: [number, number][][] = [];
   let cur: [number, number][] = [];
   for (const p of points) {
@@ -17,7 +20,7 @@ export function linePath(points: Pt[], connect: LineConnect = "straight"): strin
     }
   }
   if (cur.length) runs.push(cur);
-  return runs.map((r) => runPath(r, connect)).join("");
+  return runs.map((r) => runPath(r, connect, smoothing)).join("");
 }
 
 /**
@@ -45,12 +48,12 @@ export function bandPath(upper: Pt[], lower: Pt[], connect: LineConnect = "strai
     .join("");
 }
 
-function runPath(pts: [number, number][], connect: LineConnect): string {
+function runPath(pts: [number, number][], connect: LineConnect, smoothing = 1): string {
   if (pts.length === 0) return "";
   if (pts.length === 1) return `M${f(pts[0][0])} ${f(pts[0][1])}`;
   switch (connect) {
     case "spline":
-      return catmullRom(pts);
+      return smoothing >= 1 ? catmullRom(pts) : smoothPath(pts, smoothing, false);
     case "bspline":
       return bSpline(pts);
     case "stepH":
@@ -91,9 +94,92 @@ export function smoothPath(pts: [number, number][], amount: number, closed: bool
   return d + (closed ? "Z" : "");
 }
 
+/**
+ * A polyline shortened by `dist` at its end, measured along its segments (never by more than half its length):
+ * the remaining vertices, closed by the cut point. With `dist` 0 the points come back unchanged.
+ */
+export function cutPolylineEnd(pts: [number, number][], dist: number): [number, number][] {
+  const n = pts.length;
+  if (n < 2 || !(dist > 0)) return pts;
+  let total = 0;
+  for (let i = 1; i < n; i++) total += Math.hypot(pts[i][0] - pts[i - 1][0], pts[i][1] - pts[i - 1][1]);
+  let left = Math.min(dist, total / 2);
+  for (let i = n - 1; i > 0; i--) {
+    const seg = Math.hypot(pts[i][0] - pts[i - 1][0], pts[i][1] - pts[i - 1][1]);
+    if (seg >= left && seg > 0) {
+      const k = left / seg;
+      return [...pts.slice(0, i), [pts[i][0] + (pts[i - 1][0] - pts[i][0]) * k, pts[i][1] + (pts[i - 1][1] - pts[i][1]) * k]];
+    }
+    left -= seg;
+  }
+  return pts;
+}
+
+/** What is drawn at the start / end of a line-like shape (line, arrow, polyline, pen stroke), or null for nothing. */
+export function lineEndOf(sh: Pick<Shape, "headStart" | "headEnd" | "headStartShape" | "headEndShape">, which: "start" | "end"): LineEnd | null {
+  if (which === "start") return sh.headStart ? (sh.headStartShape ?? "arrow") : null;
+  return sh.headEnd ? (sh.headEndShape ?? "arrow") : null;
+}
+
 /** Smoothing amount of a drawn shape: the new 0…1 value, or 1 for shapes saved with the old `smooth` flag. */
 export function shapeSmoothing(sh: { smoothing?: number; smooth?: boolean }): number {
   return sh.smoothing ?? (sh.smooth ? 1 : 0);
+}
+
+/**
+ * A smoothed polyline in 3D (any coordinates): the same curves as `linePath` — "spline" through the points with
+ * `smoothing` 0…1, or "bspline" near them — sampled `steps` times per segment. Returns, per original segment
+ * i → i+1 ("bspline": per knot span), the sampled points including both ends, so each piece can be projected and
+ * depth-sorted on its own. Straight lines come back as the plain segments.
+ */
+export function smoothPolyline3(p: [number, number, number][], connect: LineConnect, smoothing = 1, steps = 8): [number, number, number][][] {
+  const n = p.length;
+  if (n < 2) return [];
+  const lerp = (a: number[], b: number[], t: number) => [a[0] + (b[0] - a[0]) * t, a[1] + (b[1] - a[1]) * t, a[2] + (b[2] - a[2]) * t] as [number, number, number];
+  const pieces: [number, number, number][][] = [];
+  if (connect === "bspline") {
+    // uniform cubic B-spline, end points repeated so the curve starts and ends on the data (as in 2D)
+    const q = [p[0], p[0], ...p, p[n - 1], p[n - 1]];
+    for (let i = 0; i + 3 < q.length; i++) {
+      const [a, b, c, e] = [q[i], q[i + 1], q[i + 2], q[i + 3]];
+      const piece: [number, number, number][] = [];
+      for (let s = 0; s <= steps; s++) {
+        const t = s / steps;
+        const w0 = (1 - t) ** 3 / 6;
+        const w1 = (3 * t ** 3 - 6 * t ** 2 + 4) / 6;
+        const w2 = (-3 * t ** 3 + 3 * t ** 2 + 3 * t + 1) / 6;
+        const w3 = t ** 3 / 6;
+        piece.push([0, 1, 2].map((k) => w0 * a[k] + w1 * b[k] + w2 * c[k] + w3 * e[k]) as [number, number, number]);
+      }
+      pieces.push(piece);
+    }
+    return pieces;
+  }
+  const a = connect === "spline" ? Math.min(1, Math.max(0, smoothing)) : 0;
+  const tt = a / 6;
+  for (let i = 0; i < n - 1; i++) {
+    const p1 = p[i];
+    const p2 = p[i + 1];
+    if (a === 0) {
+      pieces.push([p1, p2]);
+      continue;
+    }
+    const p0 = p[Math.max(0, i - 1)];
+    const p3 = p[Math.min(n - 1, i + 2)];
+    const c1 = [0, 1, 2].map((k) => p1[k] + (p2[k] - p0[k]) * tt);
+    const c2 = [0, 1, 2].map((k) => p2[k] - (p3[k] - p1[k]) * tt);
+    const piece: [number, number, number][] = [];
+    for (let s = 0; s <= steps; s++) {
+      const t = s / steps;
+      // de Casteljau on the cubic Bézier p1, c1, c2, p2
+      const ab = lerp(p1, c1, t);
+      const bc = lerp(c1, c2, t);
+      const cd = lerp(c2, p2, t);
+      piece.push(lerp(lerp(ab, bc, t), lerp(bc, cd, t), t));
+    }
+    pieces.push(piece);
+  }
+  return pieces;
 }
 
 /** Centripetal Catmull-Rom spline through all points, emitted as cubic Béziers. */

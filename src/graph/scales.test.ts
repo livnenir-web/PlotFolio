@@ -11,6 +11,13 @@ describe("ticks", () => {
     expect(niceStep(100)).toBe(20);
     expect(niceStep(7)).toBe(1);
     expect(niceStep(0.5)).toBe(0.1);
+    // a step with a 5 in the next place keeps that digit in the labels
+    const ax = { numberFormat: "auto", decimals: 2, scale: "linear", thousands: false } as const;
+    expect([0.75, 1, 1.25].map((v) => formatTick(v, ax, 0.25))).toEqual(["0.75", "1.00", "1.25"]);
+    expect([0, 2.5, 5].map((v) => formatTick(v, ax, 2.5))).toEqual(["0.0", "2.5", "5.0"]);
+    expect([0, 0.2, 0.4].map((v) => formatTick(v, ax, 0.2))).toEqual(["0.0", "0.2", "0.4"]);
+    expect([0, 20].map((v) => formatTick(v, ax, 20))).toEqual(["0", "20"]);
+    expect(formatTick(1 / 3, ax, 1 / 3)).toBe("0.3");
   });
   it("expands to a nice domain", () => {
     expect(niceDomain(0.3, 9.7)).toEqual({ from: 0, to: 10, step: 2 });
@@ -107,10 +114,10 @@ describe("log2 / ln scales and minor-tick control", () => {
 });
 
 describe("positioned breaks and per-segment scales", () => {
-  it("centres the gap at the requested fraction of the axis", () => {
+  it("centers the gap at the requested fraction of the axis", () => {
     const axis = { ...newAxis(d, "x"), auto: false, from: 0, to: 100, majorStep: 10, breaks: [{ id: "b", from: 20, to: 80, gapMm: 2, position: 0.25 }] };
     const s = buildScale(axis, [0, 42], null);
-    // gap centred at 25 % of 42 mm = 10.5 mm → [9.5, 11.5]
+    // gap centered at 25 % of 42 mm = 10.5 mm → [9.5, 11.5]
     expect(s.gaps[0][0]).toBeCloseTo(9.5);
     expect(s.gaps[0][1]).toBeCloseTo(11.5);
     expect(s.map(20)).toBeCloseTo(9.5);

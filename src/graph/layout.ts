@@ -1,4 +1,4 @@
-import type { Axis, Graph, Layer, Legend, Plot, Project, TextStyle } from "../model/types";
+import type { Axis, Graph, Layer, Legend, Plot, Project, RevealEffect, Shape, TextStyle } from "../model/types";
 import { buildScale, type AxisScale } from "./scales";
 import { DEFAULT_HISTOGRAM, extent, getPlotData, getScatter3dData, histogramBins, type Bin, type XYData } from "./data";
 import { formatTick, isLogScale } from "./ticks";
@@ -8,6 +8,8 @@ import { getMatrixData, type MatrixData } from "./matrix";
 import { makeColorMapper, type ColorMapper } from "./colormaps";
 import { makeProjector, type Projector } from "./projection3d";
 import { sampleFunction } from "./functionPlot";
+import { legendOrder, shownLayers } from "../model/figure";
+import { placeBrackets } from "../model/brackets";
 
 export interface BBox {
   x0: number;
@@ -31,7 +33,7 @@ export interface AxisGeom {
   scale: AxisScale;
   /** Coordinate of the axis line: y for x-axis, x for y-axes (mm). */
   line: number;
-  /** +1 if ticks/labels go towards increasing coordinate (down / right), -1 otherwise. */
+  /** +1 if ticks/labels go toward increasing coordinate (down / right), -1 otherwise. */
   side: 1 | -1;
   tickOut: number; // tick length drawn outside the frame (mm)
   tickIn: number; // tick length drawn inside the frame (mm)
@@ -75,8 +77,41 @@ export interface ColorScaleGeom {
   plotId: string;
 }
 
+/** The current point of an animated plot, in data units and canvas mm (3D: projected, with its depth). */
+export interface AnimMarker {
+  plotId: string;
+  x: number;
+  y: number;
+  z?: number;
+  xMm: number;
+  yMm: number;
+  depth?: number;
+}
+
+/**
+ * What an animation frame adds to a layer (see graph/animation.ts). Absent in static layouts, so the
+ * exported markup of a figure without animation is unchanged.
+ */
+export interface LayerAnim {
+  /** plots fading in (build-up): opacity 0…1; missing = opaque */
+  plotOpacity: Map<string, number>;
+  /** plots whose first / last data point is interpolated at a cutoff: it gets no symbol, label or error bar */
+  partial: Map<string, { head: boolean; tail: boolean }>;
+  /** fading tail along x: the plot is masked by a gradient from transparent (x0Mm) to opaque (x1Mm) */
+  tailMask: Map<string, { x0Mm: number; x1Mm: number }>;
+  /** fading tail along the point order: opacity rises from the first to the last point */
+  fadeByOrder: Set<string>;
+  markers: AnimMarker[];
+  /** vertical cursor line at this canvas x (mm) */
+  cursorXMm: number | null;
+  readout: { text: string; xMm: number; yMm: number; anchor: "start" | "end" }[];
+  style: { marker: RevealEffect["marker"]; cursor: RevealEffect["cursor"]; readout: RevealEffect["readout"] };
+}
+
 export interface LayerLayout {
   layer: Layer;
+  /** present only in animation frames */
+  anim?: LayerAnim;
   x: AxisGeom;
   y: AxisGeom;
   y2?: AxisGeom;
@@ -90,7 +125,7 @@ export interface LayerLayout {
   /** bar plots in drawing order (for grouping / stacking) */
   barPlots: Plot[];
   horizontalBars: boolean;
-  /** the project's plot colour cycle (bars coloured per category use it) */
+  /** the project's plot color cycle (bars colored per category use it) */
   palette: string[];
   legend: LegendGeom;
   colorScale?: ColorScaleGeom;
@@ -119,7 +154,12 @@ export interface GraphLayout {
 
 const AXIS_STYLE_KEYS = ["titleStyle", "tickLabelStyle", "tickDir", "majorTickMm", "minorTickMm", "lineWidthPt", "color", "titleGapMm"] as const;
 
-/** Y axes can inherit their styling from the X axis. */
+/** The look that "Same style as X axis" shares, as a copy to give an axis of its own (unlinking keeps the look). */
+export function axisLookOf(a: Axis): Pick<Axis, (typeof AXIS_STYLE_KEYS)[number]> {
+  return { titleStyle: { ...a.titleStyle }, tickLabelStyle: { ...a.tickLabelStyle }, tickDir: a.tickDir, majorTickMm: a.majorTickMm, minorTickMm: a.minorTickMm, lineWidthPt: a.lineWidthPt, color: a.color, titleGapMm: a.titleGapMm };
+}
+
+/** Y axes can take their look from the X axis (`sameAsX`): fonts, tick direction and length, line and title gap. Nothing else is shared. */
 export function effectiveAxis(layer: Layer, which: "x" | "y" | "y2" | "z"): Axis {
   const a = layer.axes[which];
   if (!a) throw new Error("axis missing");
@@ -146,7 +186,33 @@ function matrixEdges(vals: number[]): [number, number] | null {
   return [Math.min(vals[0] - d0, vals[vals.length - 1] + d1), Math.max(vals[0] - d0, vals[vals.length - 1] + d1)];
 }
 
+/** Room a bracket's label takes beyond the bracket line, mm. */
+export function bracketLabelMm(sh: Shape): number {
+  return ptToMm(sh.labelStyle?.sizePt ?? 8) * 1.1 + 0.8;
+}
+
 export function plotAxisExtent(layer: Layer, which: "x" | "y" | "y2" | "z", ctx: ExtentCtx, positiveOnly: boolean): [number, number] | null {
+  const ext = dataAxisExtent(layer, which, ctx, positiveOnly);
+  // significance brackets attached to the axes count towards the automatic range of the value axis, with room
+  // for their labels, so they stay inside the data area
+  const valueAxis = ctx.horizontalBars ? "x" : "y";
+  const brackets = which === valueAxis ? (layer.shapes ?? []).filter((sh) => sh.kind === "bracket" && sh.coord === "data") : [];
+  if (!ext || !brackets.length) return ext;
+  let [lo, hi] = ext;
+  const size = valueAxis === "y" ? layer.frame.hMm : layer.frame.wMm;
+  for (const sh of brackets) {
+    for (const v of valueAxis === "y" ? [sh.y1, sh.y2] : [sh.x1, sh.x2]) {
+      if (!Number.isFinite(v) || (positiveOnly && v <= 0)) continue;
+      lo = Math.min(lo, v);
+      const frac = Math.min(0.5, bracketLabelMm(sh) / Math.max(1, size));
+      const top = positiveOnly ? v * Math.pow(Math.max(v, hi) / lo, frac / (1 - frac)) : v + ((Math.max(v, hi) - lo) * frac) / (1 - frac);
+      hi = Math.max(hi, top);
+    }
+  }
+  return [lo, hi];
+}
+
+function dataAxisExtent(layer: Layer, which: "x" | "y" | "y2" | "z", ctx: ExtentCtx, positiveOnly: boolean): [number, number] | null {
   let lo = Infinity;
   let hi = -Infinity;
   const push = (a: number, b: number) => {
@@ -272,7 +338,7 @@ function rotatedExtent(wMm: number, hMm: number, deg: number): { across: number;
   return { across: wMm * Math.sin(a) + hMm * Math.cos(a), along: wMm * Math.cos(a) + hMm * Math.sin(a) };
 }
 
-function axisGeom(which: "x" | "y" | "y2", layer: Layer, scale: AxisScale, cross?: number | null): AxisGeom {
+export function axisGeom(which: "x" | "y" | "y2", layer: Layer, scale: AxisScale, cross?: number | null): AxisGeom {
   const axis = effectiveAxis(layer, which);
   const f = layer.frame;
   const tickOut = axis.tickDir === "out" ? axis.majorTickMm : 0;
@@ -377,9 +443,24 @@ function axisGeom(which: "x" | "y" | "y2", layer: Layer, scale: AxisScale, cross
   };
 }
 
+/**
+ * The tick step of a color scale: `step`, or the next round step (1, 2, 5 × a power of ten) at which neighboring
+ * labels of height `labelMm` are clear of each other on a bar drawn at `mmPerUnit`.
+ */
+export function colorScaleStep(step: number, mmPerUnit: number, labelMm: number): number {
+  if (!(step > 0) || !(mmPerUnit > 0)) return step;
+  let s = step;
+  for (let i = 0; i < 12 && s * mmPerUnit < labelMm; i++) {
+    const p = Math.pow(10, Math.floor(Math.log10(s) + 1e-9));
+    const m = Math.round(s / p);
+    s = Number(((m < 2 ? 2 : m < 5 ? 5 : 10) * p).toPrecision(12));
+  }
+  return s;
+}
+
 export function legendGeom(layer: Layer, legend: Legend, style: TextStyle): LegendGeom {
   const f = layer.frame;
-  const plots = layer.plots.filter((p) => p.visible && p.showInLegend !== false && !["heatmap", "contour", "surface3d", "box"].includes(p.type));
+  const plots = legendOrder(layer.plots).filter((p) => p.visible && (legend.showActive || p.showInLegend !== false) && !["heatmap", "contour", "surface3d", "box"].includes(p.type));
   const rowH = lineHeightMm(style) * 1.05;
   const pad = legend.paddingMm ?? 1;
   const columns = Math.max(1, Math.min(plots.length || 1, Math.round(legend.columns ?? 1)));
@@ -391,6 +472,17 @@ export function legendGeom(layer: Layer, legend: Legend, style: TextStyle): Lege
   const w = pad * 2 + columns * colW + (columns - 1) * colGap;
   const h = pad * 2 + rowH * rows;
   return { x: f.xMm + legend.xMm, y: f.yMm + legend.yMm, w, h, rowH, pad, entries };
+}
+
+/** The legend entry at a point of the canvas (mm): the one in the column and row the point falls in, else the nearest. */
+export function legendEntryAt(lg: LegendGeom, xMm: number, yMm: number): LegendGeom["entries"][number] | undefined {
+  if (!lg.entries.length) return undefined;
+  const rx = xMm - lg.x - lg.pad;
+  const ry = yMm - lg.y;
+  const xs = [...new Set(lg.entries.map((e) => e.x))].sort((a, b) => a - b);
+  const col = xs.filter((x) => x <= rx).pop() ?? xs[0];
+  const inCol = lg.entries.filter((e) => e.x === col);
+  return inCol.reduce((best, e) => (Math.abs(ry - (e.y + lg.rowH / 2)) < Math.abs(ry - (best.y + lg.rowH / 2)) ? e : best));
 }
 
 export function textItemBBox(text: { text: string; xMm: number; yMm: number; style: TextStyle; anchor: "start" | "middle" | "end"; rotation: number }): BBox {
@@ -501,7 +593,9 @@ export function layoutLayer(project: Project, layer: Layer): LayerLayout {
   return ll;
 }
 
-function computeLayerLayout(project: Project, layer: Layer): LayerLayout {
+function computeLayerLayout(project: Project, stored: Layer): LayerLayout {
+  // brackets that belong to two plots stand where those are now, and are left out while one of them is hidden
+  const layer = placeBrackets(stored);
   const data = new Map<string, XYData>();
   const bins = new Map<string, Bin[]>();
   const matrices = new Map<string, MatrixData>();
@@ -518,7 +612,7 @@ function computeLayerLayout(project: Project, layer: Layer): LayerLayout {
       continue;
     }
     if (p.type === "function") {
-      // sampled after the x range is known; an explicit range still counts towards the x extent
+      // sampled after the x range is known; an explicit range still counts toward the x extent
       const f = p.func;
       data.set(p.id, { x: f && f.from !== null && f.to !== null ? [f.from, f.to] : [], y: [] });
       continue;
@@ -597,8 +691,17 @@ function computeLayerLayout(project: Project, layer: Layer): LayerLayout {
   const cmPlot = layer.plots.find((p) => p.visible && colors.has(p.id));
   if (cs && cs.visible && cmPlot) {
     const mapper = colors.get(cmPlot.id)!;
-    const csAxis: Axis = { ...xa, scale: mapper.log ? "log" : "linear", auto: false, from: mapper.min, to: mapper.max, majorStep: null, breaks: [] };
-    const sc = buildScale(csAxis, [cs.lengthMm, 0], [mapper.min, mapper.max]);
+    const manualStep = cs.tickStep && cs.tickStep > 0 && !mapper.log ? cs.tickStep : null;
+    const csAxis: Axis = { ...xa, scale: mapper.log ? "log" : "linear", auto: false, reversed: false, from: mapper.min, to: mapper.max, majorMode: undefined, majorStep: manualStep, breaks: [], ...(cs.decimals != null ? { numberFormat: "fixed" as const, decimals: Math.max(0, Math.round(cs.decimals)) } : {}) };
+    let sc = buildScale(csAxis, [cs.lengthMm, 0], [mapper.min, mapper.max]);
+    // automatic ticks on a short bar: a wider step, so that the labels do not run into each other
+    if (!manualStep && !mapper.log && !mapper.discrete && mapper.max > mapper.min) {
+      const step = colorScaleStep(sc.step, cs.lengthMm / (mapper.max - mapper.min), lineHeightMm(cs.style));
+      if (step !== sc.step) {
+        csAxis.majorStep = step;
+        sc = buildScale(csAxis, [cs.lengthMm, 0], [mapper.min, mapper.max]);
+      }
+    }
     let ticks = sc.major.map((v) => ({ value: v, r: sc.map(v)!, text: formatTick(v, csAxis, sc.step) })).filter((t) => t.r !== null);
     if (mapper.discrete) {
       // label the band boundaries instead of nice ticks
@@ -653,9 +756,24 @@ function computeLayerLayout(project: Project, layer: Layer): LayerLayout {
   }
   for (const sh of layer.shapes ?? []) {
     const m = shapeMm.get(sh.id)!;
-    boxesB.push({ x0: Math.min(m.x1, m.x2), y0: Math.min(m.y1, m.y2), x1: Math.max(m.x1, m.x2), y1: Math.max(m.y1, m.y2) });
+    // a bracket's ticks and label reach beyond its two end points
+    const pad = sh.kind === "bracket" ? Math.max(sh.headSizeMm, sh.label ? bracketLabelMm(sh) : 0) : 0;
+    boxesB.push({ x0: Math.min(m.x1, m.x2) - pad, y0: Math.min(m.y1, m.y2) - pad, x1: Math.max(m.x1, m.x2) + pad, y1: Math.max(m.y1, m.y2) + pad });
   }
   return { layer, x, y, y2, data, bins, matrices, colors, boxes, categories, barPlots, horizontalBars, palette: project.defaults.colors, legend, colorScale, is3d, projector, zScale, shapeMm, shapePointsMm, textMm, toData: toDataFn, toMm: toMmFn, bbox: unionBBox(boxesB) };
+}
+
+/**
+ * The x axis of a laid-out layer over another range, everything else as laid out (animation "follow" axes).
+ * Axis breaks are dropped: a sliding window rarely contains them.
+ */
+export function xAxisOver(ll: LayerLayout, from: number, to: number): AxisGeom {
+  const layer = ll.layer;
+  const f = layer.frame;
+  const xa = effectiveAxis(layer, "x");
+  const scale = buildScale({ ...xa, auto: false, from, to, breaks: [] }, [f.xMm, f.xMm + f.wMm], [from, to], ll.x.scale.categories);
+  const crossX = xa.crossAt != null && Number.isFinite(xa.crossAt) ? ll.y.scale.map(xa.crossAt) : null;
+  return axisGeom("x", layer, scale, crossX);
 }
 
 export const CANVAS_MARGIN_MM = 2;
@@ -674,11 +792,56 @@ export function layoutGraph(project: Project, graph: Graph): GraphLayout {
 }
 
 function computeGraphLayout(project: Project, graph: Graph): GraphLayout {
-  const layers = graph.layers.map((l) => layoutLayer(project, l));
+  // hidden layers are left out here, so nothing downstream (drawing, clicking, export, animation) meets them
+  const layers = shownLayers(graph).map((l) => layoutLayer(project, l));
   const content = unionBBox(layers.map((l) => l.bbox));
   const widthMm = graph.canvas.widthMm;
-  const heightMm = graph.canvas.autoHeight ? Math.max(20, Math.ceil((content.y1 + CANVAS_MARGIN_MM) * 2) / 2) : graph.canvas.heightMm;
+  // an automatic height follows what stands on the page: layers parked beside it (drafts, supporting data) do not stretch it
+  const beside = (b: BBox) => b.x1 <= 0 || b.x0 >= widthMm;
+  const onPage = layers.filter((l) => !beside(l.bbox));
+  const bottom = onPage.length ? unionBBox(onPage.map((l) => l.bbox)).y1 : 0;
+  const heightMm = graph.canvas.autoHeight ? Math.max(20, Math.ceil((bottom + CANVAS_MARGIN_MM) * 2) / 2) : graph.canvas.heightMm;
   return { graph, layers, widthMm, heightMm, content };
+}
+
+/**
+ * The layout without what lies wholly outside the canvas (the page): layers with nothing on the page, and single
+ * labels, shapes, legends and color scales of the remaining layers. Objects outside the page are kept in the
+ * project and shown on screen, but never exported. `left` counts what was taken out.
+ */
+export function pageContent(layout: GraphLayout): { layout: GraphLayout; left: number } {
+  const { widthMm: W, heightMm: H } = layout;
+  const out = (b: BBox) => b.x1 <= 0 || b.y1 <= 0 || b.x0 >= W || b.y0 >= H;
+  let left = 0;
+  const layers: LayerLayout[] = [];
+  for (const ll of layout.layers) {
+    if (out(ll.bbox)) {
+      left++;
+      continue;
+    }
+    const l = ll.layer;
+    const texts = l.texts.filter((t) => {
+      const p = ll.textMm.get(t.id);
+      return !p || !out(textItemBBox({ ...t, xMm: p.x, yMm: p.y }));
+    });
+    const shapes = (l.shapes ?? []).filter((sh) => {
+      const m = ll.shapeMm.get(sh.id);
+      return !m || !out({ x0: Math.min(m.x1, m.x2), y0: Math.min(m.y1, m.y2), x1: Math.max(m.x1, m.x2), y1: Math.max(m.y1, m.y2) });
+    });
+    const lg = ll.legend;
+    const legendOut = l.legend.visible && lg.entries.length > 0 && out({ x0: lg.x, y0: lg.y, x1: lg.x + lg.w, y1: lg.y + lg.h });
+    const cs = ll.colorScale;
+    // the bar and, to its right, its labels and title: generous, so a bar is only dropped when it is clearly off the page
+    const csOut = !!cs && out({ x0: cs.x, y0: cs.y - 1, x1: cs.x + cs.w + 25, y1: cs.y + cs.h + 1 });
+    const gone = l.texts.length - texts.length + ((l.shapes?.length ?? 0) - shapes.length) + (legendOut ? 1 : 0) + (csOut ? 1 : 0);
+    if (!gone) {
+      layers.push(ll);
+      continue;
+    }
+    left += gone;
+    layers.push({ ...ll, layer: { ...l, texts, shapes: l.shapes ? shapes : l.shapes, legend: legendOut ? { ...l.legend, visible: false } : l.legend }, colorScale: csOut ? undefined : cs });
+  }
+  return left ? { layout: { ...layout, layers }, left } : { layout, left: 0 };
 }
 
 /** Marker radius in mm for a plot. */

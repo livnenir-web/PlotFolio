@@ -33,7 +33,8 @@ export const OKABE_ITO = [
 
 export const DEFAULT_FONT = "Arial";
 
-export const PROJECT_VERSION = 1;
+/** 2: 3D scatter plots honor `showMarkers` (version-1 files are migrated in `parseProject`). */
+export const PROJECT_VERSION = 2;
 
 export function defaultGraphDefaults(): GraphDefaults {
   return {
@@ -141,6 +142,33 @@ export function defaultSurface(): import("./types").SurfaceOptions {
 export function defaultColorScale(d: GraphDefaults, frame: LayerFrame): import("./types").ColorScale {
   return { visible: true, xMm: frame.wMm + 3, yMm: 0, lengthMm: frame.hMm, widthMm: 3, title: "", style: cloneStyle(d.tickLabel) };
 }
+/** A fresh animation: 5 s at 30 fps, looping, the data revealed along x with a red symbol at the current point. */
+export function defaultAnimation(): import("./types").Animation {
+  return {
+    enabled: true,
+    durationS: 5,
+    fps: 30,
+    loop: true,
+    holdEndS: 1,
+    reveal: {
+      enabled: true,
+      mode: "x",
+      from: null,
+      to: null,
+      plotIds: null,
+      axes: "fixed",
+      followWindow: 1,
+      marker: { show: true, shape: "circle", sizePt: 3, color: "#e02020", filled: true },
+      cursor: { show: false, color: "#e02020", widthPt: 0.5, style: "dash" },
+      readout: { show: false, decimals: 2, position: "marker" },
+      tail: { mode: "none", window: 1 },
+    },
+    rotate: { enabled: false, azimuthFrom: 35, azimuthTo: 395, elevationFrom: 25, elevationTo: 25, easing: "linear" },
+    buildUp: { enabled: false, order: null, transition: "cut", fadeFraction: 0.3 },
+    export: { format: "mp4", widthPx: 1920, transparent: false, quality: "normal" },
+  };
+}
+
 export function defaultView3D(): import("./types").View3D {
   return { azimuth: 35, elevation: 25, boxX: 1, boxY: 1, boxZ: 0.75, showPanes: true, showGrid: true };
 }
@@ -161,7 +189,8 @@ export function newShape(kind: import("./types").ShapeKind, x1: number, y1: numb
     fillOpacity: 0.3,
     headStart: false,
     headEnd: kind === "arrow",
-    headSizeMm: 2,
+    headSizeMm: kind === "bracket" ? 1.2 : 2,
+    ...(kind === "bracket" ? { strokeWidthPt: 0.5, label: "*" } : {}),
     ...(kind === "image" ? { opacity: 1, lockAspect: true } : {}),
     ...(kind === "freehand" ? { smooth: true } : {}),
   };
@@ -181,7 +210,7 @@ export function newPlot(
     type,
     source,
     color,
-    showMarkers: type === "scatter" || type === "lineScatter",
+    showMarkers: type === "scatter" || type === "lineScatter" || type === "scatter3d",
     func: type === "function" ? { expression: "sin(x)", from: null, to: null, points: 400 } : undefined,
     marker: { shape: "circle", sizePt: d.markerSizePt, filled: true },
     showLine: type === "line" || type === "lineScatter" || type === "fitCurve" || type === "function",

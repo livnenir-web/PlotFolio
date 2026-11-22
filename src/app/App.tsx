@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import { Group, Panel, Separator, type PanelImperativeHandle } from "react-resizable-panels";
-import { useStore, undo, redo } from "../model/store";
+import { useStore } from "../model/store";
 import { Toolbar } from "./Toolbar";
 import { Sidebar } from "./Sidebar";
 import { TabBar } from "./TabBar";
@@ -10,15 +10,18 @@ import { GraphView } from "../graph/GraphView";
 import { ImportDialog } from "../sheet/ImportDialog";
 import { PlotDialog } from "../sheet/PlotDialog";
 import { ExportDialog } from "../export/ExportDialog";
+import { AnimationExportDialog } from "../export/AnimationExportDialog";
+import { ShortcutsDialog } from "./ShortcutsDialog";
+import { installShortcutKeys } from "./shortcutKeys";
 import { useDialogs } from "./dialogs";
-import { importFileObject, importPath, importViaDialog } from "../io/importFiles";
+import { importFileObject, importPath } from "../io/importFiles";
 import { isTauri } from "../io/platform";
-import { clearAutosave, installViewMemory, loadAutosave, loadAutosaveView, otherAutosaves, saveProject, startAutosave, updateTitle } from "../io/project";
+import { clearAutosave, installViewMemory, loadAutosave, loadAutosaveView, otherAutosaves, startAutosave, updateTitle } from "../io/project";
 import { installRefitWatcher } from "../fit/runFit";
 import { confirmDialog } from "../ui/confirm";
 import { SettingsDialog } from "./SettingsDialog";
 import { AboutDialog } from "./AboutDialog";
-import { handleMenu, installMenuListener } from "./menu";
+import { installMenuListener } from "./menu";
 import { installOpenFileListener, openPendingFile, openStartupProject } from "./openFile";
 import { currentLabel, installClipboardSync, installQuitListener, installWindowFileSync, openProjectWindow } from "./windows";
 import { fileToDataUrl, insertImageIntoGraph, isImagePath } from "../io/images";
@@ -26,9 +29,15 @@ import { syncRecentMenu } from "../io/recent";
 import { installColumnDropHandler, isColumnDragFile } from "../io/columnDrop";
 import { installMainSync } from "./popout";
 import { AnalysisDialog } from "../analysis/AnalysisDialog";
+import { CurveAnalysisDialog } from "../analysis/CurveAnalysisDialog";
+import { CompareDialog } from "../analysis/CompareDialog";
+import { StatsDialog } from "../analysis/StatsDialog";
+import { StartScreen, useShowStart } from "./StartScreen";
 import { ClosePrompt } from "./ClosePrompt";
+import { TooltipLayer } from "../ui/Tooltip";
 import { FunctionDialog } from "../graph/FunctionDialog";
 import { installCloseGuard } from "./closeGuard";
+import { keyHint } from "./shortcuts";
 
 export default function App() {
   const activeTab = useStore((s) => s.ui.activeTab);
@@ -40,13 +49,19 @@ export default function App() {
   const importSource = useDialogs((s) => s.importSource);
   const plotDialog = useDialogs((s) => s.plotDialog);
   const exportDialog = useDialogs((s) => s.exportDialog);
+  const animationExport = useDialogs((s) => s.animationExport);
+  const shortcutsOpen = useDialogs((s) => s.shortcutsOpen);
   const toast = useDialogs((s) => s.toast);
   const settingsOpen = useDialogs((s) => s.settingsOpen);
   const aboutOpen = useDialogs((s) => s.aboutOpen);
   const analysis = useDialogs((s) => s.analysis);
+  const curveAnalysis = useDialogs((s) => s.curveAnalysis);
+  const compare = useDialogs((s) => s.compare);
+  const stats = useDialogs((s) => s.stats);
   const functionDialog = useDialogs((s) => s.functionDialog);
   const projectName = useStore((s) => s.project.name);
   const dirty = useStore((s) => s.dirty);
+  const showStart = useShowStart();
   const sidebarRef = useRef<PanelImperativeHandle>(null);
   const inspectorRef = useRef<PanelImperativeHandle>(null);
   const [dragOver, setDragOver] = useState(false);
@@ -138,55 +153,8 @@ export default function App() {
     if (!inspectorCollapsed && p.isCollapsed()) p.expand();
   }, [inspectorCollapsed]);
 
-  // keyboard shortcuts
-  useEffect(() => {
-    const onKey = (e: KeyboardEvent) => {
-      const mod = e.metaKey || e.ctrlKey;
-      if (!mod) return;
-      const target = e.target as HTMLElement;
-      const typing = target && (target.tagName === "INPUT" || target.tagName === "TEXTAREA" || target.isContentEditable);
-      const k = e.key.toLowerCase();
-      const st = useStore.getState();
-      if (k === "z" && !typing) {
-        e.preventDefault();
-        e.shiftKey ? redo() : undo();
-      } else if (k === "s") {
-        e.preventDefault();
-        void saveProject(e.shiftKey);
-      } else if (k === "o" && !e.shiftKey) {
-        e.preventDefault();
-        handleMenu("open");
-      } else if (k === "i" && !e.altKey && !e.shiftKey && !typing) {
-        e.preventDefault();
-        void importViaDialog();
-      } else if (k === "i" && e.altKey) {
-        e.preventDefault();
-        st.toggleInspector();
-      } else if (k === "s" && e.altKey) {
-        e.preventDefault();
-        st.toggleSidebar();
-      } else if (k === "w" && !typing) {
-        e.preventDefault();
-        if (st.ui.activeTab) st.closeTab(st.ui.activeTab);
-      } else if (k === "p" && !typing && st.ui.activeTab?.kind === "sheet") {
-        e.preventDefault();
-        useDialogs.getState().setPlotDialog({ sheetId: st.ui.activeTab.id });
-      } else if (k === "f" && !typing && !e.shiftKey && !e.altKey && !isTauri() && st.ui.activeTab?.kind === "graph") {
-        e.preventDefault();
-        handleMenu("fit");
-      } else if (k === "e" && e.shiftKey && st.ui.activeTab?.kind === "graph") {
-        e.preventDefault();
-        useDialogs.getState().setExportDialog({ graphId: st.ui.activeTab.id });
-      } else if (k === "n" && !typing) {
-        e.preventDefault();
-        if (e.shiftKey) st.addGraph();
-        else if (!st.dirty) st.resetProject();
-        else void confirmDialog("Discard unsaved changes and start a new project?").then((ok) => ok && useStore.getState().resetProject());
-      }
-    };
-    window.addEventListener("keydown", onKey);
-    return () => window.removeEventListener("keydown", onKey);
-  }, []);
+  // keyboard shortcuts: key presses are looked up in the registry (defaults plus the user's own, see shortcutKeys.ts)
+  useEffect(() => installShortcutKeys(), []);
 
   // file drop (Tauri paths + browser File objects)
   useEffect(() => {
@@ -265,17 +233,18 @@ export default function App() {
             <div className="main">
               <TabBar />
               <div className="content">
-                {activeSheet && <SheetView key={activeSheet.id} sheet={activeSheet} />}
-                {activeGraph && <GraphView key={activeGraph.id} graph={activeGraph} />}
-                {!activeSheet && !activeGraph && <EmptyState />}
+                {showStart && <StartScreen />}
+                {!showStart && activeSheet && <SheetView key={activeSheet.id} sheet={activeSheet} />}
+                {!showStart && activeGraph && <GraphView key={activeGraph.id} graph={activeGraph} />}
+                {!showStart && !activeSheet && !activeGraph && <EmptyState />}
               </div>
             </div>
           </Panel>
           <Separator className="separator" />
           <Panel
             panelRef={inspectorRef}
-            defaultSize={260}
-            minSize={200}
+            defaultSize={280}
+            minSize={260}
             maxSize={480}
             collapsible
             collapsedSize={0}
@@ -292,11 +261,17 @@ export default function App() {
       {importSource && <ImportDialog key={importSource.name} source={importSource} />}
       {plotDialog && <PlotDialog key={plotDialog.sheetId} sheetId={plotDialog.sheetId} />}
       {exportDialog && <ExportDialog graphId={exportDialog.graphId} />}
+      {animationExport && <AnimationExportDialog graphId={animationExport.graphId} />}
+      {shortcutsOpen && <ShortcutsDialog />}
       {settingsOpen && <SettingsDialog />}
       {aboutOpen && <AboutDialog key={aboutOpen} page={aboutOpen} />}
       <ClosePrompt />
+      <TooltipLayer />
       {functionDialog && <FunctionDialog graphId={functionDialog.graphId} layerId={functionDialog.layerId} />}
       {analysis && <AnalysisDialog key={analysis.op + analysis.sheetId} op={analysis.op} sheetId={analysis.sheetId} />}
+      {curveAnalysis && <CurveAnalysisDialog key={curveAnalysis.op + curveAnalysis.graphId} {...curveAnalysis} />}
+      {compare && <CompareDialog key={(compare.sheetId ?? "") + (compare.graphId ?? "")} init={compare} />}
+      {stats && <StatsDialog key={stats.graphId} {...stats} />}
       {toast && <div className="toast">{toast}</div>}
     </div>
   );
@@ -306,7 +281,10 @@ function EmptyState() {
   return (
     <div style={{ flex: 1, display: "flex", alignItems: "center", justifyContent: "center", color: "var(--text-3)", flexDirection: "column", gap: 8 }}>
       <div style={{ fontSize: 15 }}>Open a sheet or graph from the sidebar</div>
-      <div style={{ fontSize: 12 }}>Drop a CSV or Excel file anywhere to import it · ⌘I to import · ⌘O to open a project</div>
+      <div style={{ fontSize: 12 }}>
+        Drop a CSV or Excel file anywhere to import it{keyHint("import") && ` · ${keyHint("import")} to import`}
+        {keyHint("open") && ` · ${keyHint("open")} to open a project`}
+      </div>
     </div>
   );
 }

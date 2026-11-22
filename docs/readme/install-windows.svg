@@ -1,0 +1,31 @@
+<svg xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" width="960" height="302" viewBox="0 0 960 302" role="img" aria-label="Install on Windows: 1. Run PlotFolio-Setup.exe. 2. In the blue box, click More info. 3. Click Run anyway.">
+<title>Install on Windows: 1. Run PlotFolio-Setup.exe. 2. In the blue box, click More info. 3. Click Run anyway.</title>
+<style>
+  text { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif; }
+  .card { fill: #f6f6f7; stroke: #d6d6da; }
+  .box { fill: #ffffff; stroke: #d6d6da; }
+  .t { fill: #1b1b1d; }
+  .t2 { fill: #636368; }
+  .ink { stroke: #6d6d73; fill: none; }
+  .inkfill { fill: #6d6d73; }
+  .soft { fill: #ececee; stroke: #c9c9ce; }
+  .acc { fill: #2b6fd6; }
+  .ring { fill: none; stroke: #2b6fd6; }
+  .onacc { fill: #ffffff; }
+  .curve { stroke: #ffffff; }
+  @media (prefers-color-scheme: dark) {
+    .card { fill: #26272a; stroke: #3b3c41; }
+    .box { fill: #1e1f21; stroke: #3b3c41; }
+    .t { fill: #e9e9eb; }
+    .t2 { fill: #a2a3aa; }
+    .ink { stroke: #a2a3aa; }
+    .inkfill { fill: #a2a3aa; }
+    .soft { fill: #323337; stroke: #4a4b51; }
+    .acc { fill: #5b9df5; }
+    .ring { stroke: #5b9df5; }
+    .onacc { fill: #101113; }
+    .curve { stroke: #101113; }
+  }
+</style>
+<rect class="card" x="0.5" y="0.5" width="959" height="301" rx="10"/><text class="t" x="24" y="38" font-size="21" font-weight="700">Install on Windows</text><text class="t2" x="936" y="38" font-size="15" text-anchor="end">Windows 10 or 11 · 64-bit</text><rect class="box" x="24" y="58" width="288" height="140" rx="7"/><path class="box" stroke-width="1.5" d="M142.0 88.0 a5 5 0 0 1 5 -5 h29 l18 18 v43 a5 5 0 0 1 -5 5 h-42 a5 5 0 0 1 -5 -5 z"/><path class="ink" stroke-width="1.5" d="M176.0 83.0 v13 a5 5 0 0 0 5 5 h13"/><rect class="ink" stroke-width="1.5" x="153.0" y="116.0" width="30" height="22" rx="3"/><path class="ink" stroke-width="1.5" d="M153.0 123.0 h30"/><text class="t" x="168.0" y="172.0" font-size="15" text-anchor="middle">PlotFolio-Setup.exe</text><circle class="acc" cx="37" cy="224" r="13"/><text class="onacc" x="37" y="229" font-size="15" font-weight="700" text-anchor="middle">1</text><text class="t" x="60" y="230" font-size="19" font-weight="600">Run the download</text><text class="t2" x="24" y="256" font-size="15">Double-click PlotFolio-Setup.exe.</text><text class="t2" x="24" y="276" font-size="15">No administrator password is needed.</text><path class="ink" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" d="M320.0 121.0 l7 7 l-7 7"/><rect class="box" x="336" y="58" width="288" height="140" rx="7"/><rect x="352" y="70" width="256" height="116" rx="3" fill="#0b62b8"/><text x="366" y="97" font-size="16" font-weight="600" fill="#ffffff">Windows protected your PC</text><text x="366" y="118" font-size="11.5" fill="#dbe9f7">Microsoft Defender SmartScreen prevented</text><text x="366" y="133" font-size="11.5" fill="#dbe9f7">an unrecognized app from starting.</text><text x="366" y="169" font-size="13" fill="#ffffff" text-decoration="underline">More info</text><rect x="508" y="150" width="88" height="24" fill="none" stroke="#ffffff" stroke-width="1.2"/><text x="552.0" y="166.5" font-size="12.5" fill="#ffffff" text-anchor="middle">Don’t run</text><rect class="ring" style="stroke:#ffffff" x="359" y="150" width="72" height="28" rx="9" stroke-width="2.5"/><circle class="acc" cx="349" cy="224" r="13"/><text class="onacc" x="349" y="229" font-size="15" font-weight="700" text-anchor="middle">2</text><text class="t" x="372" y="230" font-size="19" font-weight="600">Click “More info”</text><text class="t2" x="336" y="256" font-size="15">A blue box says that Windows</text><text class="t2" x="336" y="276" font-size="15">protected your PC.</text><path class="ink" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" d="M632.0 121.0 l7 7 l-7 7"/><rect class="box" x="648" y="58" width="288" height="140" rx="7"/><rect x="664" y="70" width="256" height="116" rx="3" fill="#0b62b8"/><text x="678" y="97" font-size="16" font-weight="600" fill="#ffffff">Windows protected your PC</text><text x="678" y="118" font-size="11.5" fill="#dbe9f7">App: PlotFolio-Setup.exe</text><text x="678" y="133" font-size="11.5" fill="#dbe9f7">Publisher: Unknown publisher</text><rect x="722" y="150" width="88" height="24" fill="none" stroke="#ffffff" stroke-width="1.2"/><text x="766.0" y="166.5" font-size="12.5" fill="#ffffff" text-anchor="middle">Run anyway</text><rect x="820" y="150" width="88" height="24" fill="none" stroke="#ffffff" stroke-width="1.2"/><text x="864.0" y="166.5" font-size="12.5" fill="#ffffff" text-anchor="middle">Don’t run</text><rect class="ring" style="stroke:#ffffff" x="717" y="145" width="98" height="34" rx="9" stroke-width="2.5"/><circle class="acc" cx="661" cy="224" r="13"/><text class="onacc" x="661" y="229" font-size="15" font-weight="700" text-anchor="middle">3</text><text class="t" x="684" y="230" font-size="19" font-weight="600">Click “Run anyway”</text><text class="t2" x="648" y="256" font-size="15">The installer finishes and PlotFolio</text><text class="t2" x="648" y="276" font-size="15">is in the Start menu.</text>
+</svg>

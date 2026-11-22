@@ -1,5 +1,5 @@
 // Lightweight LaTeX-like markup for axis titles, legends and text labels.
-// Supported: \alpha … \omega (Greek, capitalised for upper case), \times \pm \mp \degree \deg \cdot \infty \leq \geq \neq \approx \angstrom \micro \sum \Delta,
+// Supported: \alpha … \omega (Greek, capitalized for upper case), \times \pm \mp \degree \deg \cdot \infty \leq \geq \neq \approx \angstrom \micro \sum \Delta,
 // ^{…} and _{…} (or ^x / _x for a single character), \it{…}, \bf{…}, \rm{…}, \\ for a backslash, and \n for a line break.
 
 import type { TextStyle } from "../model/types";

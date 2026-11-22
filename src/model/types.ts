@@ -1,4 +1,4 @@
-// Core data model. All physical sizes are millimetres (mm), fonts and line widths are points (pt).
+// Core data model. All physical sizes are millimeters (mm), fonts and line widths are points (pt).
 
 export type CellValue = number | string | null;
 
@@ -16,6 +16,11 @@ export interface Column {
   widthPx?: number;
   /** free text shown in the Comments header row */
   comment?: string;
+  /**
+   * Set on a column that holds the points excluded from another column of the same sheet (that column's id):
+   * each excluded value sits here on its own row. See src/model/exclude.ts.
+   */
+  excludedFrom?: string;
 }
 
 export interface Sheet {
@@ -147,6 +152,8 @@ export interface LineOptions {
   /** Custom dash pattern in pt: [dash, gap, dash, gap …]. Used when style is "custom". */
   dashPt: number[];
   connect: LineConnect;
+  /** connect "spline": how far the curve bends, 0 (straight segments) … 1 (full spline, the default) */
+  smoothing?: number;
   /** 0 … 1 (default 1, opaque) */
   opacity?: number;
 }
@@ -163,7 +170,10 @@ export interface FunctionOptions {
   error?: string;
 }
 
-export type ShapeKind = "line" | "arrow" | "rect" | "ellipse" | "image" | "polyline" | "polygon" | "freehand";
+export type ShapeKind = "line" | "arrow" | "rect" | "ellipse" | "image" | "polyline" | "polygon" | "freehand" | "bracket";
+
+/** What can sit at an end of a drawn line: an arrow head, a symbol centered on the end point, or a bar across it. */
+export type LineEnd = "arrow" | "circle" | "square" | "diamond" | "bar";
 
 /** Annotation object drawn on the canvas (coordinates in canvas mm). */
 export interface Shape {
@@ -183,10 +193,13 @@ export interface Shape {
   dashPt: number[];
   fill: string | null;
   fillOpacity: number;
-  /** arrow heads for line/arrow */
+  /** line, arrow, polyline, freehand: whether something is drawn at the start / at the end, and how large (mm) */
   headStart: boolean;
   headEnd: boolean;
   headSizeMm: number;
+  /** what is drawn there (missing = "arrow") */
+  headStartShape?: LineEnd;
+  headEndShape?: LineEnd;
   /** kind "image": the picture as a data URL (stored inside the project), its pixel size and display options */
   href?: string;
   naturalW?: number;
@@ -207,6 +220,19 @@ export interface Shape {
   smoothing?: number;
   /** rect: rounded corners */
   cornerRadiusMm?: number;
+  /**
+   * kind "bracket" (a significance bracket between two groups): a line from (x1, y1) to (x2, y2) with a short tick
+   * of `headSizeMm` at each end, pointing toward the data, and this label centered on the other side
+   * (e.g. "*", "ns", "p = 0.012"; markup allowed).
+   */
+  label?: string;
+  labelStyle?: TextStyle;
+  /**
+   * kind "bracket", attached to the axes: ids of the two box-type plots it joins (the first at x1/y1, the second at
+   * x2/y2). The bracket then follows them (model/brackets.ts): it stays above them when groups are hidden or
+   * reordered, and is not drawn while either one is hidden.
+   */
+  between?: [string, string];
 }
 
 export type ColormapName =
@@ -233,7 +259,7 @@ export type ColormapName =
   | "spectral"
   | "custom";
 
-/** How a heatmap fills the space between matrix points: discrete cells, or interpolated colours. */
+/** How a heatmap fills the space between matrix points: discrete cells, or interpolated colors. */
 export type HeatmapInterpolation = "none" | "bilinear" | "bicubic";
 
 export interface ColormapOptions {
@@ -245,9 +271,9 @@ export interface ColormapOptions {
   log: boolean;
   /** Heatmaps only; missing = "none" (one flat cell per matrix point). */
   interpolation?: HeatmapInterpolation;
-  /** name "custom": gradient stops (position 0–1, colour), at least two */
+  /** name "custom": gradient stops (position 0–1, color), at least two */
   custom?: { t: number; color: string }[];
-  /** number of discrete colour bands (0 or missing = continuous) */
+  /** number of discrete color bands (0 or missing = continuous) */
   discrete?: number;
 }
 
@@ -270,12 +296,12 @@ export interface BarOptions {
   stacked: boolean;
   horizontal: boolean;
   outline: boolean;
-  /** outline colour and width (default black, 0.5 pt) */
+  /** outline color and width (default black, 0.5 pt) */
   outlineColor?: string;
   outlineWidthPt?: number;
-  /** "plot": every bar in the plot colour; "category": one palette colour per category; "column": via Colour by column */
+  /** "plot": every bar in the plot color; "category": one palette color per category; "column": via Color by column */
   colorMode?: "plot" | "category" | "column";
-  /** hatching drawn in the plot colour over a white bar (for black-and-white print) */
+  /** hatching drawn in the plot color over a white bar (for black-and-white print) */
   pattern?: BarPattern;
 }
 
@@ -285,6 +311,11 @@ export interface BoxOptions {
   showOutliers: boolean;
   width: number;
   showData: boolean;
+  /**
+   * How the group is drawn (missing = "box"): a box with whiskers, a violin (the smoothed distribution, with a
+   * slim box inside) or every data point with a line at the median.
+   */
+  style?: "box" | "violin" | "points";
 }
 
 export interface SurfaceOptions {
@@ -329,6 +360,11 @@ export interface HistogramOptions {
   to: number;
   normalization: "count" | "density" | "probability";
   filled: boolean;
+  /**
+   * "cdf": instead of bars, the empirical cumulative distribution as a step curve — the fraction of values up to x
+   * (the number of values when normalization is "count"). Exact, so the bin settings do not apply. Missing = "bars".
+   */
+  display?: "bars" | "cdf";
 }
 
 export interface FitSpec {
@@ -375,7 +411,7 @@ export interface ErrorBarOptions {
   style?: "bars" | "band";
   capMm: number;
   widthPt: number;
-  /** band: edge interpolation, fill opacity (0–1), fill colour (null = plot colour) and whether to outline the edges */
+  /** band: edge interpolation, fill opacity (0–1), fill color (null = plot color) and whether to outline the edges */
   bandConnect?: BandConnect;
   bandOpacity?: number;
   bandColor?: string | null;
@@ -393,7 +429,7 @@ export interface Plot {
     shape: MarkerShape;
     sizePt: number;
     filled: boolean;
-    /** null = the plot colour */
+    /** null = the plot color */
     fillColor?: string | null;
     edgeColor?: string | null;
     /** outline width in pt (default: a quarter of the size, hollow symbols only) */
@@ -403,10 +439,17 @@ export interface Plot {
   };
   /** listed in the legend (default true) */
   showInLegend?: boolean;
+  /**
+   * Place in the legend when its order differs from the drawing order: entries are listed by rising rank, plots
+   * without one after them in drawing order. Unset on every plot = the legend follows the drawing order.
+   */
+  legendRank?: number;
   labels?: DataLabels;
   /** thin lines from each point down to the x axis and/or across to the y axis */
   dropLines?: { toX: boolean; toY: boolean };
-  /** 2D scatter: colour every symbol by the value of a column through the plot's colormap */
+  /** 3D scatter: join consecutive points with a line in the plot color (a trajectory). `showLine` stays the drop lines. */
+  joinPoints?: boolean;
+  /** 2D scatter: color every symbol by the value of a column through the plot's colormap */
   colorBy?: { colId: string | null };
   showLine: boolean;
   line: LineOptions;
@@ -421,6 +464,32 @@ export interface Plot {
   box?: BoxOptions;
   surface?: SurfaceOptions;
   func?: FunctionOptions;
+  /** id of the curve group (Graph.plotGroups) this plot belongs to */
+  groupId?: string;
+}
+
+/** How the curves of a group are colored, in their order within each layer. */
+export type GroupColors =
+  /** the colors of a named palette (model/palettes.ts), repeating when the group is longer */
+  | { type: "palette"; paletteId: string }
+  /** light to dark shades of one color */
+  | { type: "shades"; base: string }
+  /** evenly spaced colors of a colormap */
+  | { type: "colormap"; name: ColormapName };
+
+/**
+ * Curves that belong together (a series of time points, the replicates of a condition). A group can span the layers
+ * of a figure: it is shown and hidden as one, selected as one for editing, and can give its curves their colors.
+ */
+export interface PlotGroup {
+  id: string;
+  name: string;
+  /** missing = every curve keeps its own color */
+  colors?: GroupColors;
+  /** run the colors the other way round */
+  reverse?: boolean;
+  /** ids of the plots that were shown when the group was hidden as a whole, so that showing it brings those back */
+  shownIds?: string[];
 }
 
 export interface ColorScale {
@@ -432,6 +501,10 @@ export interface ColorScale {
   widthMm: number;
   title: string;
   style: TextStyle;
+  /** distance between labeled ticks, in the units of the scale (missing or null = automatic, thinned so the labels do not overlap) */
+  tickStep?: number | null;
+  /** decimals of the tick labels (missing or null = the number format of the layer's x axis, as before) */
+  decimals?: number | null;
 }
 
 export interface View3D {
@@ -458,6 +531,11 @@ export interface Legend {
   columns?: number;
   /** inner margin in mm (default 1) */
   paddingMm?: number;
+  /**
+   * List every plot that is shown on the graph, whatever its own "in the legend" tick says: hiding a plot removes
+   * its entry and showing it again brings the entry back.
+   */
+  showActive?: boolean;
 }
 
 /** Text next to every data point. */
@@ -472,7 +550,7 @@ export interface DataLabels {
   sizePt: number;
 }
 
-/** "mm": canvas millimetres. "data": positions are axis values of the layer and follow the axis range. */
+/** "mm": canvas millimeters. "data": positions are axis values of the layer and follow the axis range. */
 export type CoordMode = "mm" | "data";
 
 export interface TextItem {
@@ -497,6 +575,12 @@ export interface LayerFrame {
 export interface Layer {
   id: string;
   name: string;
+  /**
+   * A hidden layer stays in the figure (and in its Layers list) but is not laid out: it is not drawn, exported,
+   * clicked or animated, and an automatic canvas height does not count it. Read `shownLayers` (model/figure.ts)
+   * wherever "the layers of the figure" means the ones on screen.
+   */
+  hidden?: boolean;
   frame: LayerFrame;
   axes: { x: Axis; y: Axis; y2?: Axis; z?: Axis };
   plots: Plot[];
@@ -523,6 +607,80 @@ export interface ObjectGroup {
   members: string[];
 }
 
+// ---------------------------------------------------------------- animation
+
+export type Easing = "linear" | "inOut";
+
+/** Draw the data progressively, with the current point marked. */
+export interface RevealEffect {
+  enabled: boolean;
+  /** "x": every animated plot is revealed up to the same x value (time); "order": each plot point by point */
+  mode: "x" | "order";
+  /** x range that the animation sweeps (mode "x"); null = the full extent of the animated plots */
+  from: number | null;
+  to: number | null;
+  /** plots that reveal; null = every plot of the figure (fits and references can be left out) */
+  plotIds: string[] | null;
+  /** "fixed": axes come from the full data; "follow": the x axis shows a window that ends at the current point */
+  axes: "fixed" | "follow";
+  /** width of the window in x units (axes "follow") */
+  followWindow: number;
+  marker: { show: boolean; shape: MarkerShape; sizePt: number; color: string; filled: boolean };
+  /** vertical line through the current x (mode "x") */
+  cursor: { show: boolean; color: string; widthPt: number; style: LineStyle };
+  /** x and y of the current point as text */
+  readout: { show: boolean; decimals: number; position: "marker" | "corner" };
+  /** older points fade out or disappear beyond a window (x units, or points in mode "order") */
+  tail: { mode: "none" | "fade" | "hide"; window: number };
+}
+
+/** Turn the 3D view while the animation plays. */
+export interface RotateEffect {
+  enabled: boolean;
+  azimuthFrom: number;
+  azimuthTo: number;
+  elevationFrom: number;
+  elevationTo: number;
+  easing: Easing;
+}
+
+/** Plots appear one after another. */
+export interface BuildUpEffect {
+  enabled: boolean;
+  /** plot ids in the order they appear; null = the plot order of each layer */
+  order: string[] | null;
+  /**
+   * What appears in one step (missing = "plot"): each plot, each curve group (plots outside a group one by one) or
+   * each layer with all its plots. `order` then lists "g:<groupId>" / "l:<layerId>" keys next to plot ids.
+   */
+  unit?: "plot" | "group" | "layer";
+  transition: "cut" | "fade";
+  /** share of each plot's step spent fading in (transition "fade") */
+  fadeFraction: number;
+}
+
+export interface AnimationExport {
+  format: "mp4" | "gif" | "png";
+  widthPx: number;
+  /** GIF and PNG: transparent background instead of the canvas color */
+  transparent: boolean;
+  quality: "normal" | "high";
+}
+
+/** An animation of a figure: one timeline, effects that can be combined. */
+export interface Animation {
+  enabled: boolean;
+  durationS: number;
+  fps: number;
+  loop: boolean;
+  /** seconds the last frame stays before the animation ends or loops */
+  holdEndS: number;
+  reveal: RevealEffect;
+  rotate: RotateEffect;
+  buildUp: BuildUpEffect;
+  export: AnimationExport;
+}
+
 export interface Graph {
   id: string;
   name: string;
@@ -530,6 +688,10 @@ export interface Graph {
   layers: Layer[];
   folderId?: string | null;
   groups?: ObjectGroup[];
+  /** curve groups (see PlotGroup); plots point at them through Plot.groupId */
+  plotGroups?: PlotGroup[];
+  /** optional animation of the figure (see Animation) */
+  animation?: Animation;
 }
 
 export interface GraphDefaults {

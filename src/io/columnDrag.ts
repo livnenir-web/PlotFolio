@@ -1,7 +1,7 @@
 // Drag selected columns out of a sheet. In the Mac app this is a native drag session (works across
 // pop-out windows); the payload travels as a small JSON file that the receiving window reads back.
 import { useDialogs } from "../app/dialogs";
-import { appDataDir, ensureDir, isTauri, writeBinary, writeText } from "./platform";
+import { appDataDir, ensureDir, isTauri, joinPath, writeBinary, writeText } from "./platform";
 
 export const DRAG_EXT = ".plotkit-columns.json";
 
@@ -48,7 +48,7 @@ async function dragIcon(): Promise<string> {
   g.lineTo(56, 54);
   g.stroke();
   const blob: Blob = await new Promise((res, rej) => c.toBlob((b) => (b ? res(b) : rej(new Error("icon"))), "image/png"));
-  const path = `${dir}/drag-icon.png`;
+  const path = joinPath(dir, "drag-icon.png");
   await writeBinary(path, new Uint8Array(await blob.arrayBuffer()));
   iconPath = path;
   return path;
@@ -61,7 +61,7 @@ export async function startNativeColumnDrag(payload: ColumnDragPayload): Promise
     const dir = await appDataDir();
     if (!dir) return false;
     await ensureDir(dir);
-    const file = `${dir}/drag-${Date.now()}${DRAG_EXT}`;
+    const file = joinPath(dir, `drag-${Date.now()}${DRAG_EXT}`);
     await writeText(file, JSON.stringify(payload));
     const { startDrag } = await import("@crabnebula/tauri-plugin-drag");
     await startDrag({ item: [file], icon: await dragIcon(), mode: "copy" });

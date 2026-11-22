@@ -1,6 +1,7 @@
 // Add sheet columns to an existing graph without changing its axis limits.
 import { useStore } from "../model/store";
 import type { Sheet } from "../model/types";
+import { defaultLayer } from "../model/figure";
 import { layoutLayer } from "./layout";
 
 /** Origin convention: a Y column's X is the nearest X-designated column to its left (else the first X column). */
@@ -40,7 +41,7 @@ export function addColumnsToGraph(sheetId: string, cols: number[], graphId: stri
   const sheet = st.project.sheets.find((s) => s.id === sheetId);
   const graph = st.project.graphs.find((g) => g.id === graphId);
   if (!sheet || !graph) return 0;
-  const target = layerId ?? (st.ui.selection.kind !== "none" && "layerId" in st.ui.selection && st.ui.selection.graphId === graphId ? st.ui.selection.layerId : graph.layers[0]?.id);
+  const target = layerId ?? (st.ui.selection.kind !== "none" && "layerId" in st.ui.selection && st.ui.selection.graphId === graphId ? st.ui.selection.layerId : defaultLayer(graph)?.id);
   if (!target) return 0;
   const ys = cols.filter((i) => sheet.columns[i] && !["X", "xErr", "yErr", "label"].includes(sheet.columns[i].designation));
   if (!ys.length) return 0;

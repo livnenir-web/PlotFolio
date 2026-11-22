@@ -79,7 +79,7 @@ export function makeProjector(view: View3D, frame: { xMm: number; yMm: number; w
 /** Which of the box's vertical/horizontal edges are in front, to pick where axes are drawn. */
 export function frontEdges(view: View3D, project?: Projector["project"]): { front: { u: 0 | 1; v: 0 | 1 }; xEdge: { v: 0 | 1; w: 0 | 1 }; yEdge: { u: 0 | 1; w: 0 | 1 }; zEdge: { u: 0 | 1; v: 0 | 1 } } {
   const az = (view.azimuth * Math.PI) / 180;
-  // the corner closest to the viewer minimises depth ∝ (u-½)·sin(az) + (v-½)·cos(az)
+  // the corner closest to the viewer minimizes depth ∝ (u-½)·sin(az) + (v-½)·cos(az)
   const front = { u: (Math.sin(az) > 0 ? 0 : 1) as 0 | 1, v: (Math.cos(az) > 0 ? 0 : 1) as 0 | 1 };
   const bottom: 0 | 1 = view.elevation >= 0 ? 0 : 1;
   // z axis: the vertical edge that is leftmost on screen, excluding the front corner

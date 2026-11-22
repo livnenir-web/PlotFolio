@@ -3,8 +3,9 @@
 
 import { useStore } from "../model/store";
 import { layoutGraph } from "../graph/layout";
+import { defaultLayer } from "../model/figure";
 import { useDialogs } from "../app/dialogs";
-import { browserPickFiles, isTauri, pickOpenFile, readBinary } from "./platform";
+import { baseName, browserPickFiles, isTauri, pickOpenFile, readBinary } from "./platform";
 
 export const IMAGE_EXTS = ["png", "jpg", "jpeg", "gif", "svg", "webp", "bmp"];
 const MIME: Record<string, string> = { png: "image/png", jpg: "image/jpeg", jpeg: "image/jpeg", gif: "image/gif", svg: "image/svg+xml", webp: "image/webp", bmp: "image/bmp" };
@@ -66,12 +67,12 @@ async function normalize(dataUrl: string): Promise<{ href: string; w: number; h:
   return { href: canvas.toDataURL(jpeg ? "image/jpeg" : "image/png", 0.92), w: canvas.width, h: canvas.height };
 }
 
-/** Let the user choose an image file; returns its data URL and name, or null when cancelled. */
+/** Let the user choose an image file; returns its data URL and name, or null when canceled. */
 export async function pickImageFile(): Promise<{ dataUrl: string; name: string } | null> {
   if (isTauri()) {
     const res = await pickOpenFile([{ name: "Images", extensions: IMAGE_EXTS }]);
     if (!res?.[0]) return null;
-    return { dataUrl: await pathToDataUrl(res[0]), name: res[0].split("/").pop() ?? "Image" };
+    return { dataUrl: await pathToDataUrl(res[0]), name: baseName(res[0]) || "Image" };
   }
   const files = await browserPickFiles(IMAGE_EXTS.map((e) => "." + e).join(","));
   if (!files[0]) return null;
@@ -80,7 +81,7 @@ export async function pickImageFile(): Promise<{ dataUrl: string; name: string }
 
 export interface InsertImageOptions {
   layerId?: string;
-  /** centre of the picture in canvas mm; default: the centre of the layer's data area */
+  /** center of the picture in canvas mm; default: the center of the layer's data area */
   at?: { x: number; y: number };
   name?: string;
   /** width in mm; default: natural size at 96 dpi, capped to 60 % of the data area */
@@ -99,7 +100,7 @@ export async function insertImageIntoGraph(graphId: string, dataUrl: string, opt
     useDialogs.getState().showToast((e as Error).message);
     return null;
   }
-  const layerId = (opts.layerId && graph.layers.some((l) => l.id === opts.layerId) ? opts.layerId : undefined) ?? graph.layers[0]?.id ?? useStore.getState().addLayer(graphId);
+  const layerId = (opts.layerId && graph.layers.some((l) => l.id === opts.layerId) ? opts.layerId : undefined) ?? defaultLayer(graph)?.id ?? useStore.getState().addLayer(graphId);
   const layout = layoutGraph(useStore.getState().project, useStore.getState().project.graphs.find((g) => g.id === graphId)!);
   const ll = layout.layers.find((x) => x.layer.id === layerId);
   const f = ll?.layer.frame ?? { xMm: 20, yMm: 5, wMm: 50, hMm: 50 };

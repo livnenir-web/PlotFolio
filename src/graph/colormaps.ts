@@ -147,7 +147,7 @@ function hex(c: number): string {
     .padStart(2, "0");
 }
 
-/** Colour of a custom gradient at u in [0,1] (stops sorted by position). */
+/** Color of a custom gradient at u in [0,1] (stops sorted by position). */
 function customColorAt(stops: { t: number; color: string }[], u: number): string {
   const sorted = [...stops].sort((a, b) => a.t - b.t);
   if (!sorted.length) return "#000000";
@@ -216,7 +216,7 @@ export function makeColorMapper(opts: ColormapOptions, dataMin: number, dataMax:
     return (v - min) / (max - min);
   };
   const n = opts.discrete && opts.discrete >= 2 ? Math.round(opts.discrete) : 0;
-  // discrete bands: every value in a band gets the band's central colour
+  // discrete bands: every value in a band gets the band's central color
   const quant = (u: number) => (n ? (Math.min(n - 1, Math.max(0, Math.floor(u * n))) + 0.5) / n : u);
   const fn = ((v: number) => colorAt(opts.name, quant(t(v)), opts.reverse, opts.custom)) as ColorMapper;
   fn.min = min;

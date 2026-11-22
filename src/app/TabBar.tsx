@@ -4,6 +4,9 @@ import type { TabRef } from "../model/types";
 import { Icon } from "../ui/Icon";
 import { useContextMenu } from "../ui/ContextMenu";
 import { popOutTab } from "./popout";
+import { reorderRow } from "../ui/reorder";
+import { formatKeys } from "./menuModel";
+import { keyHint } from "./shortcuts";
 
 interface ItemRef {
   id: string;
@@ -46,6 +49,7 @@ export const TabBar = memo(function TabBar() {
         return (
           <div
             key={t.kind + t.id}
+            {...reorderRow("tabs", t.kind + t.id, (from, to) => visibleTabs[to] && st.getState().moveTab(t, visibleTabs[to], to > from), true)}
             className={"tab" + (active ? " active" : "")}
             onMouseDown={(e) => {
               if (e.button === 1) {
@@ -59,10 +63,10 @@ export const TabBar = memo(function TabBar() {
             }}
             onContextMenu={(e) =>
               openMenu(e, [
-                { label: "Open in new window", shortcut: "⇧⌘O", onSelect: () => void popOutTab(t) },
+                { label: "Open in new window", shortcut: keyHint("popOut") || undefined, onSelect: () => void popOutTab(t) },
                 { label: "Rename", onSelect: () => { setDraft(name); setRenaming(t); } },
                 { type: "sep" },
-                { label: "Close", shortcut: "⌘W", onSelect: () => st.getState().closeTab(t) },
+                { label: "Close", shortcut: formatKeys("Mod+W"), onSelect: () => st.getState().closeTab(t) },
                 { label: "Close others", onSelect: () => st.getState().ui.openTabs.filter((o) => !sameTab(o, t)).forEach((o) => st.getState().closeTab(o)) },
               ])
             }
@@ -89,6 +93,7 @@ export const TabBar = memo(function TabBar() {
             )}
             <span
               className="close"
+              data-no-reorder
               onMouseDown={(e) => e.stopPropagation()}
               onClick={(e) => {
                 e.stopPropagation();

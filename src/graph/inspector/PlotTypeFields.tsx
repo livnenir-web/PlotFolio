@@ -5,6 +5,7 @@ import { CheckField, ColorField, FontFields, Group, NumberField, Row, Segmented,
 import { COLORMAP_NAMES, DEFAULT_CUSTOM_STOPS } from "../colormaps";
 import { Icon } from "../../ui/Icon";
 import { defaultMatrixSource } from "../matrix";
+import { IS_MAC } from "../../app/menuModel";
 
 type Upd = (fn: (p: Plot) => void) => void;
 
@@ -16,7 +17,7 @@ export function ColormapFields({ plot, upd }: { plot: Plot; upd: Upd }) {
       fn(p.colormap);
     });
   return (
-    <Group title="Colormap">
+    <Group title="Color map">
       <Row label="Map">
         <SelectField value={cm.name} options={COLORMAP_NAMES} onChange={(v) => u((c) => void (c.name = v))} />
         <CheckField label="Reverse" checked={cm.reverse} onChange={(v) => u((c) => void (c.reverse = v))} />
@@ -40,23 +41,22 @@ export function ColormapFields({ plot, upd }: { plot: Plot; upd: Upd }) {
               </button>
             </Row>
           ))}
-          <Row label="">
+          <Row label="" title="A stop is a position (% of the range) and a color; the colors between stops are interpolated in RGB">
             <button className="btn small" onClick={() => u((c) => void (c.custom = [...(c.custom?.length ? c.custom : DEFAULT_CUSTOM_STOPS), { t: 0.5, color: "#e69f00" }]))}>
               Add stop
             </button>
-            <span className="hint">position (% of the range) and colour; interpolated in RGB</span>
           </Row>
         </>
       )}
-      <Row label="Levels" title="Split the range into this many discrete colour bands (0 = continuous)">
+      <Row label="Levels" title="Split the range into this many discrete color bands, labeled at their boundaries (0 = continuous)">
         <NumberField value={cm.discrete ?? 0} step={1} min={0} max={64} onCommit={(v) => u((c) => void (c.discrete = v >= 2 ? Math.round(v) : 0))} style={{ width: 56 }} />
-        <span className="hint">{cm.discrete && cm.discrete >= 2 ? "bands, labelled at their boundaries" : "continuous"}</span>
+        <span className="hint">{cm.discrete && cm.discrete >= 2 ? "bands" : "continuous"}</span>
       </Row>
       <Row label="">
         <CheckField label="Logarithmic" checked={cm.log} onChange={(v) => u((c) => void (c.log = v))} />
       </Row>
       {plot.type === "heatmap" && (
-        <Row label="Smoothing" title="How the colour varies between matrix points">
+        <Row label="Smoothing" title="How the color varies between matrix points">
           <SelectField<HeatmapInterpolation>
             value={cm.interpolation ?? "none"}
             options={[
@@ -104,9 +104,13 @@ export function ContourFields({ plot, upd }: { plot: Plot; upd: Upd }) {
         <CheckField label="Labels on lines" checked={c.showLabels} onChange={(v) => u((o) => void (o.showLabels = v))} />
       </Row>
       <Row label="Line color">
-        <CheckField label="From colormap" checked={c.lineColor === null} onChange={(v) => u((o) => void (o.lineColor = v ? null : "#000000"))} />
-        {c.lineColor !== null && <ColorField value={c.lineColor} onChange={(v) => u((o) => void (o.lineColor = v))} />}
+        <CheckField label="From the color map" checked={c.lineColor === null} onChange={(v) => u((o) => void (o.lineColor = v ? null : "#000000"))} />
       </Row>
+      {c.lineColor !== null && (
+        <Row label="">
+          <ColorField value={c.lineColor} onChange={(v) => u((o) => void (o.lineColor = v))} />
+        </Row>
+      )}
     </Group>
   );
 }
@@ -120,9 +124,9 @@ export function BarFields({ plot, upd, updAllBars, sheet }: { plot: Plot; upd: U
     });
   const mode = b.colorMode ?? "plot";
   return (
-    <Group title="Bars">
+    <Group title="Bars" info="Group width, arrangement and direction apply to all bar plots of the layer; colors, pattern and outline are per plot.">
       <Row label="Group width" title="Width of the bar group as a fraction of the category spacing; shared by every bar plot of the layer">
-        <input type="range" min={5} max={100} step={5} value={Math.round(b.width * 100)} onChange={(e) => updAllBars((o) => void (o.width = Number(e.target.value) / 100))} style={{ width: 90 }} />
+        <input type="range" min={5} max={100} step={5} value={Math.round(b.width * 100)} onChange={(e) => updAllBars((o) => void (o.width = Number(e.target.value) / 100))} style={{ flex: 1, minWidth: 30 }} />
         <NumberField value={Math.round(b.width * 100)} step={5} min={5} max={100} onCommit={(v) => updAllBars((o) => void (o.width = Math.min(100, Math.max(5, v)) / 100))} style={{ width: 52 }} />
         <span className="hint">%</span>
       </Row>
@@ -132,11 +136,11 @@ export function BarFields({ plot, upd, updAllBars, sheet }: { plot: Plot; upd: U
       <Row label="Direction" title="Shared by every bar plot of the layer">
         <Segmented value={b.horizontal ? "h" : "v"} options={[{ value: "v", label: "Vertical" }, { value: "h", label: "Horizontal" }]} onChange={(v) => updAllBars((o) => void (o.horizontal = v === "h"))} />
       </Row>
-      <Row label="Bar colours" title="One colour for the plot, a palette colour per category, or colours from a column (set under Colour by column)">
+      <Row label="Bar colors" title="One color for the plot, a palette color per category, or colors from a column (set under Color by column)">
         <SelectField<"plot" | "category" | "column">
           value={mode}
           options={[
-            { value: "plot", label: "Plot colour" },
+            { value: "plot", label: "Plot color" },
             { value: "category", label: "Per category (palette)" },
             { value: "column", label: "By a column" },
           ]}
@@ -157,7 +161,7 @@ export function BarFields({ plot, upd, updAllBars, sheet }: { plot: Plot; upd: U
           <SelectField value={plot.colorBy?.colId ?? ""} options={[{ value: "", label: "—" }, ...sheet.columns.map((c, i) => ({ value: c.id, label: c.longName || String.fromCharCode(65 + i) }))]} onChange={(v) => upd((p) => void (p.colorBy = { colId: v || null }))} />
         </Row>
       )}
-      <Row label="Pattern" title="Hatching in the bar colour over white, for figures printed in black and white">
+      <Row label="Pattern" title="Hatching in the bar color over white, for figures printed in black and white">
         <SelectField<BarPattern>
           value={b.pattern ?? "none"}
           options={[
@@ -175,10 +179,11 @@ export function BarFields({ plot, upd, updAllBars, sheet }: { plot: Plot; upd: U
       <Row label="Outline">
         <CheckField label="" checked={b.outline} onChange={(v) => u((o) => void (o.outline = v))} />
         <ColorField value={b.outlineColor ?? "#000000"} onChange={(v) => u((o) => void (o.outlineColor = v))} />
+      </Row>
+      <Row label="Outline width">
         <NumberField value={b.outlineWidthPt ?? 0.5} step={0.25} min={0} onCommit={(v) => u((o) => void (o.outlineWidthPt = v))} style={{ width: 50 }} />
         <span className="hint">pt</span>
       </Row>
-      <div className="hint">Group width, arrangement and direction apply to all bar plots of the layer; colours, pattern and outline are per plot.</div>
     </Group>
   );
 }
@@ -190,8 +195,21 @@ export function BoxFields({ plot, upd }: { plot: Plot; upd: Upd }) {
       if (!p.box) p.box = defaultBox();
       fn(p.box);
     });
+  const style = b.style ?? "box";
   return (
     <Group title="Box">
+      <Row label="Style" title="Box: quartiles and whiskers. Violin: the smoothed distribution with a slim box inside. Points: every value, with a line at the median.">
+        <Segmented
+          value={style}
+          options={[
+            { value: "box", label: "Box" },
+            { value: "violin", label: "Violin" },
+            { value: "points", label: "Points" },
+          ]}
+          onChange={(v) => u((o) => void (o.style = v === "box" ? undefined : v))}
+        />
+      </Row>
+      {style !== "points" && (
       <Row label="Whiskers">
         <SelectField
           value={b.whisker}
@@ -203,13 +221,14 @@ export function BoxFields({ plot, upd }: { plot: Plot; upd: Upd }) {
           onChange={(v) => u((o) => void (o.whisker = v))}
         />
       </Row>
+      )}
       <Row label="Width">
         <NumberField value={b.width} step={0.05} min={0.05} max={1} onCommit={(v) => u((o) => void (o.width = v))} style={{ width: 60 }} />
       </Row>
-      <Row label="">
+      <Row wrap label="Show">
         <CheckField label="Mean" checked={b.showMean} onChange={(v) => u((o) => void (o.showMean = v))} />
-        <CheckField label="Outliers" checked={b.showOutliers} onChange={(v) => u((o) => void (o.showOutliers = v))} />
-        <CheckField label="Data points" checked={b.showData} onChange={(v) => u((o) => void (o.showData = v))} />
+        {style === "box" && <CheckField label="Outliers" checked={b.showOutliers} onChange={(v) => u((o) => void (o.showOutliers = v))} />}
+        {style !== "points" && <CheckField label="Data points" checked={b.showData} onChange={(v) => u((o) => void (o.showData = v))} />}
       </Row>
     </Group>
   );
@@ -224,7 +243,7 @@ export function SurfaceFields({ plot, upd }: { plot: Plot; upd: Upd }) {
     });
   return (
     <Group title="Surface">
-      <Row label="">
+      <Row wrap label="Show">
         <CheckField label="Fill" checked={s.fill} onChange={(v) => u((o) => void (o.fill = v))} />
         <CheckField label="Mesh" checked={s.wireframe} onChange={(v) => u((o) => void (o.wireframe = v))} />
         <CheckField label="Shading" checked={s.shading} onChange={(v) => u((o) => void (o.shading = v))} />
@@ -251,7 +270,7 @@ export function MatrixSourceFields({ plot, upd }: { plot: Plot; upd: Upd }) {
   const cols = sheet.columns.map((c, i) => ({ value: c.id, label: `${columnLetter(i)}${c.longName ? ` — ${c.longName}` : ""}` }));
   const none = { value: "", label: "None" };
   return (
-    <Group title="Matrix data">
+    <Group title="Matrix data" info="Block of columns: each Z column is one X position (its name can be the X value) and each row is one Y position. X, Y, Z columns: three columns of points, put on a grid when they are scattered.">
       <Row label="Sheet">
         <SelectField
           value={plot.source.sheetId}
@@ -280,7 +299,6 @@ export function MatrixSourceFields({ plot, upd }: { plot: Plot; upd: Upd }) {
           <Row label="X of columns">
             <CheckField label="From numeric column names" checked={!!m.xFromNames} onChange={(v) => u((o) => void (o.xFromNames = v))} />
           </Row>
-          <div className="hint">Each Z column is one X position (its name can be the X value); each row is one Y position.</div>
         </>
       ) : (
         <>
@@ -291,9 +309,8 @@ export function MatrixSourceFields({ plot, upd }: { plot: Plot; upd: Upd }) {
           <Row label="Z">
             <SelectField value={plot.source.zColId ?? ""} options={[none, ...cols]} onChange={(v) => upd((p) => void (p.source.zColId = v || null))} />
           </Row>
-          <Row label="Grid points">
+          <Row label="Grid points" title="Resolution of the grid that scattered points are put on">
             <NumberField value={m.gridN ?? 50} step={10} min={5} max={200} onCommit={(v) => u((o) => void (o.gridN = Math.round(v)))} style={{ width: 60 }} />
-            <span className="hint">when points are scattered</span>
           </Row>
         </>
       )}
@@ -307,7 +324,7 @@ export function View3DFields({ graph, layer }: { graph: Graph; layer: Layer }) {
   if (!v) return null;
   const u = (fn: (o: NonNullable<Layer["view3d"]>) => void) => st.getState().updateLayer(graph.id, layer.id, (l) => l.view3d && fn(l.view3d));
   return (
-    <Group title="3D view">
+    <Group title="3D view" info={`Drag the plot with ${IS_MAC ? "⌥ (Option)" : "Alt"} held to rotate it.`}>
       <Row label="Azimuth">
         <input type="range" min={-180} max={180} step={1} value={v.azimuth} onChange={(e) => u((o) => void (o.azimuth = Number(e.target.value)))} style={{ flex: 1 }} />
         <NumberField value={v.azimuth} step={5} onCommit={(x) => u((o) => void (o.azimuth = x))} style={{ width: 56 }} />
@@ -325,7 +342,6 @@ export function View3DFields({ graph, layer }: { graph: Graph; layer: Layer }) {
         <CheckField label="Panes" checked={v.showPanes} onChange={(x) => u((o) => void (o.showPanes = x))} />
         <CheckField label="Grid" checked={v.showGrid} onChange={(x) => u((o) => void (o.showGrid = x))} />
       </Row>
-      <div className="hint">Drag the plot with ⌥ (Option) held to rotate it.</div>
     </Group>
   );
 }
@@ -335,6 +351,9 @@ export function ColorScaleFields({ graph, layer }: { graph: Graph; layer: Layer 
   const cs = layer.colorScale;
   if (!cs) return null;
   const u = (fn: (o: NonNullable<Layer["colorScale"]>) => void) => st.getState().updateLayer(graph.id, layer.id, (l) => l.colorScale && fn(l.colorScale));
+  // the plot whose colors the bar shows: the first shown plot of the layer that is colored by a color map
+  const plot = layer.plots.find((p) => p.visible && !!p.colormap && (p.type === "heatmap" || p.type === "contour" || p.type === "surface3d" || p.type === "scatter3d" || !!p.colorBy?.colId));
+  const log = !!plot?.colormap?.log;
   return (
     <>
       <Group title="Color scale">
@@ -354,6 +373,32 @@ export function ColorScaleFields({ graph, layer }: { graph: Graph; layer: Layer 
         </Row>
         <FontFields style={cs.style} onChange={(p) => u((o) => void Object.assign(o.style, p))} />
       </Group>
+      <Group title="Ticks" info="The step between labeled ticks and the decimals of the labels. Automatic: round values, as many as fit the length of the bar without the labels touching.">
+        <Row label="Step" title={log ? "A logarithmic scale is labeled at the powers of ten" : "Distance between labeled ticks, in the units of the scale"}>
+          <NumberField value={cs.tickStep ?? null} min={0} placeholder="auto" disabled={log} onCommit={(v) => u((o) => void (o.tickStep = v > 0 ? v : null))} />
+          <button className="btn small" disabled={cs.tickStep == null} onClick={() => u((o) => void (o.tickStep = null))} title="Back to an automatic step">
+            Auto
+          </button>
+        </Row>
+        <Row label="Decimals">
+          <NumberField value={cs.decimals ?? null} min={0} max={10} step={1} placeholder="auto" onCommit={(v) => u((o) => void (o.decimals = Math.max(0, Math.round(v))))} />
+          <button className="btn small" disabled={cs.decimals == null} onClick={() => u((o) => void (o.decimals = null))} title="Back to automatic decimals">
+            Auto
+          </button>
+        </Row>
+      </Group>
+      {plot ? (
+        <>
+          <Group>
+            <div className="note">The colors and the range belong to the plot “{plot.name}”; changing them here changes that plot.</div>
+          </Group>
+          <ColormapFields plot={plot} upd={(fn) => st.getState().updatePlot(graph.id, layer.id, plot.id, fn)} />
+        </>
+      ) : (
+        <Group>
+          <div className="note">No plot of this layer is shown with a color map, so there is no color bar to draw.</div>
+        </Group>
+      )}
     </>
   );
 }

@@ -92,10 +92,10 @@ export function ImportDialog({ source }: { source: ImportSource }) {
           </Row>
         </div>
       </div>
-      <div className="hint" style={{ marginTop: 8 }}>
-        {rows.length} rows × {nCols} columns. First column becomes X, the rest Y; change designations later from the column header menu.
+      <div className="note" style={{ marginTop: 8 }} title="The first column becomes X, the rest Y; change that later from the menu of a column header.">
+        {rows.length} rows × {nCols} columns
       </div>
-      <div style={{ maxHeight: 300, overflow: "auto", border: "1px solid var(--border)", borderRadius: 6, marginTop: 6 }}>
+      <div style={{ maxHeight: 300, overflow: "auto", border: "1px solid var(--border)", borderRadius: 3, marginTop: 6 }}>
         <table className="preview-table">
           <thead>
             <tr>

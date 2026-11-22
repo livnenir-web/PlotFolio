@@ -5,8 +5,9 @@ import { MenuBar } from "./MenuBar";
 import { guardedOpen } from "./menu";
 import { useStore, undo, redo } from "../model/store";
 import { Icon } from "../ui/Icon";
-import { isTauri } from "../io/platform";
+import { hasNativeMenu, isTauri, shell } from "../io/platform";
 import { popOutActiveTab } from "./popout";
+import { keyHintSuffix, useShortcuts } from "./shortcuts";
 
 export const Toolbar = memo(function Toolbar() {
   const activeTab = useStore((s) => s.ui.activeTab);
@@ -14,18 +15,22 @@ export const Toolbar = memo(function Toolbar() {
   const dirty = useStore((s) => s.dirty);
   const sidebarCollapsed = useStore((s) => s.ui.sidebarCollapsed);
   const inspectorCollapsed = useStore((s) => s.ui.inspectorCollapsed);
+  const overrides = useShortcuts((s) => s.overrides);
   const st = useStore;
-
+  // the Mac app: this row is also the window's title bar (it is dragged to move the window and shows the project
+  // name between the traffic lights and the buttons). The Windows app has the Windows title bar above this row.
+  const mac = shell() === "mac";
+  const drag = mac ? { "data-tauri-drag-region": true } : {};
 
   return (
-    <div className="titlebar" data-tauri-drag-region style={isTauri() ? undefined : { paddingLeft: 10 }}>
+    <div className="titlebar" {...drag}>
       <div className="toolbar-group">
-        <button className={"icon-btn" + (sidebarCollapsed ? "" : " on")} title="Toggle sidebar (⌘⌥S)" onClick={() => st.getState().toggleSidebar()}>
+        <button className={"icon-btn" + (sidebarCollapsed ? "" : " on")} title={`Toggle sidebar${keyHintSuffix("toggleSidebar", overrides)}`} onClick={() => st.getState().toggleSidebar()}>
           <Icon name="sidebar" />
         </button>
       </div>
-      {/* In the browser there is no native menu bar: PlotFolio draws its own here. The Mac app uses the system menu bar. */}
-      {!isTauri() && (
+      {/* The Mac app uses the system menu bar. In the Windows app and in the browser PlotFolio draws its own here. */}
+      {!hasNativeMenu() && (
         <>
           <div className="toolbar-sep" />
           <MenuBar />
@@ -33,10 +38,10 @@ export const Toolbar = memo(function Toolbar() {
       )}
       <div className="toolbar-sep" />
       <div className="toolbar-group undo-group">
-        <button className="icon-btn" title="Undo (⌘Z)" onClick={() => undo()}>
+        <button className="icon-btn" title={`Undo${keyHintSuffix("undo")}`} onClick={() => undo()}>
           <Icon name="undo" />
         </button>
-        <button className="icon-btn" title="Redo (⇧⌘Z)" onClick={() => redo()}>
+        <button className="icon-btn" title={`Redo${keyHintSuffix("redo")}`} onClick={() => redo()}>
           <Icon name="redo" />
         </button>
       </div>
@@ -46,19 +51,22 @@ export const Toolbar = memo(function Toolbar() {
           <SamplesButton />
         </>
       )}
-      <div className="spacer" data-tauri-drag-region />
-      <div className="title" data-tauri-drag-region>
-        {projectName}
-        {dirty && <span className="dirty"> — Edited</span>}
-      </div>
-      <div className="spacer" data-tauri-drag-region />
+      <div className="spacer" {...drag} />
+      {/* the Windows title bar already shows the name of the project */}
+      {shell() !== "windows" && (
+        <div className="title" {...drag}>
+          {projectName}
+          {dirty && <span className="dirty"> — Edited</span>}
+        </div>
+      )}
+      <div className="spacer" {...drag} />
       <div className="toolbar-group">
         {isTauri() && (
-          <button className="icon-btn" title="Open this sheet or graph in a new window (⇧⌘O)" disabled={!activeTab} onClick={() => void popOutActiveTab()}>
+          <button className="icon-btn" title={`Open this sheet or graph in a new window${keyHintSuffix("popOut", overrides)}`} disabled={!activeTab} onClick={() => void popOutActiveTab()}>
             <Icon name="popout" />
           </button>
         )}
-        <button className={"icon-btn" + (inspectorCollapsed ? "" : " on")} title="Toggle inspector (⌘⌥I)" onClick={() => st.getState().toggleInspector()}>
+        <button className={"icon-btn" + (inspectorCollapsed ? "" : " on")} title={`Toggle inspector${keyHintSuffix("toggleInspector", overrides)}`} onClick={() => st.getState().toggleInspector()}>
           <Icon name="inspector" />
         </button>
       </div>

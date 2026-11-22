@@ -1,7 +1,7 @@
 {
   "name": "plotfolio",
   "private": true,
-  "version": "0.2.0",
+  "version": "0.5.0",
   "license": "MIT",
   "type": "module",
   "scripts": {
@@ -22,8 +22,10 @@
     "@tauri-apps/plugin-opener": "^2",
     "d3-array": "^3.2.4",
     "d3-scale": "^4.0.2",
+    "gifenc": "^1.0.3",
     "immer": "^11.2.9",
     "mathjs": "^15.2.0",
+    "mediabunny": "^1.65.2",
     "ml-levenberg-marquardt": "^5.1.0",
     "ml-matrix": "^6.15.1",
     "nanoid": "^6.0.2",

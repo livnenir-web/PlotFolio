@@ -5,7 +5,7 @@ import { useStore } from "../model/store";
 import { useDialogs } from "../app/dialogs";
 import { addColumnsToGraph } from "../graph/addData";
 import { DRAG_EXT, type ColumnDragPayload } from "./columnDrag";
-import { readText } from "./platform";
+import { baseName, readText } from "./platform";
 import { insertImageIntoGraph, isImagePath, pathToDataUrl } from "./images";
 
 export function isColumnDragFile(path: string): boolean {
@@ -66,7 +66,7 @@ async function handleImageDrop(path: string, x: number, y: number): Promise<void
   const layerId = el?.closest<HTMLElement>("[data-layer-id]")?.dataset.layerId;
   try {
     const url = await pathToDataUrl(path);
-    await insertImageIntoGraph(st.ui.activeTab.id, url, { layerId, name: path.split("/").pop() });
+    await insertImageIntoGraph(st.ui.activeTab.id, url, { layerId, name: baseName(path) });
   } catch (e) {
     useDialogs.getState().showToast(`Could not insert the image: ${(e as Error).message}`);
   }

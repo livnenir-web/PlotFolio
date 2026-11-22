@@ -1,4 +1,14 @@
 [
-  { "file": "ecg.plotproj", "name": "ECG: voltage and spectrum" },
-  { "file": "3d-surface.plotproj", "name": "Light intensity: surface, heatmap and contour" }
+  {
+    "file": "ecg.plotproj",
+    "name": "ECG: voltage and spectrum"
+  },
+  {
+    "file": "3d-surface.plotproj",
+    "name": "Light intensity: surface, heatmap and contour"
+  },
+  {
+    "file": "groups.plotproj",
+    "name": "Groups: violins, significance and CDF"
+  }
 ]

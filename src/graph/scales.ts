@@ -150,7 +150,7 @@ export function buildScale(axis: Axis, range: [number, number], dataExtent: [num
       off += breaks[i].gapMm;
     }
   });
-  // breaks with an explicit position: the gap is centred at that fraction of the axis (0 = left/bottom end)
+  // breaks with an explicit position: the gap is centered at that fraction of the axis (0 = left/bottom end)
   breaks.forEach((b, i) => {
     if (b.position == null || !Number.isFinite(b.position)) return;
     const frac = Math.min(1, Math.max(0, reversed ? 1 - b.position : b.position));
