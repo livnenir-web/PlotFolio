@@ -22,7 +22,7 @@
 
 ## Install
 
-Download, then three steps. Nothing else is needed: no account, no developer tools.
+Download PlotFolio for Mac or Windows. Your system may show a warning the first time you open it: the steps show how to continue, and the reason is [explained below](#why-the-warning).
 
 <a href="https://github.com/livnenir-web/PlotFolio/releases/latest/download/PlotFolio.dmg"><img src="docs/readme/install-mac.svg" width="100%" alt="Install on a Mac (macOS 12 or later, Apple Silicon and Intel). 1: Open the download, PlotFolio.dmg. 2: Drag PlotFolio to Applications and open it from there. 3: Confirm once: macOS blocks the first start; allow it in System Settings, Privacy and Security, with Open Anyway."></a>
 
@@ -50,6 +50,7 @@ After that, PlotFolio is in the Start menu and `.plotproj` files open with a dou
 
 </details>
 
+<a name="why-the-warning"></a>
 <sub><b>Why do the systems warn?</b> Apple and Microsoft skip the warning only for apps signed with a certificate that the developer pays for every year, about $100 or more for each system. PlotFolio is free, so it is not signed. The downloads are built by GitHub from the source in this repository.</sub>
 
 <details>
