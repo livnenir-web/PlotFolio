@@ -248,6 +248,12 @@ in the fallback font there (Arial).
   → drawing tool in `GraphView.tsx` (`drag.kind === "draw"`, `finishPoly`).
 - The app icon: drawn by `scripts/make-icon.py` (two volcanoes as a 3D surface; its header lists the steps from
   the drawing to the icon files in `src-tauri/icons/`, and to `public/favicon.png` for the browser tab).
+  The script also writes the same icon with fumes standing over the craters (`docs/icon/plotfolio-icon-fumes*.svg`):
+  since 0.5.1 this is the icon of the apps, the browser tab and the README's install strip.
+  `scripts/make-animated-icon.py` makes the moving version for web pages
+  (`docs/icon/plotfolio-icon-animated.svg`, used on nirlivne.com and at the top of the README). The look of the fumes is set once, in
+  `make-icon.py`. The animated icon is built on `docs/icon/plotfolio-icon-512.png`, the icon WITHOUT fumes: keep
+  that file plain, or the moving fumes are drawn over still ones.
 - The landing part of `README.md` (what a visitor of the GitHub page sees first): its pictures are in
   `docs/readme/`; the buttons and install strips are drawn by `scripts/make-readme-art.py`, whose header says how
   the others were made. GitHub shows only plain images and simple HTML there: no styles, no scripts.

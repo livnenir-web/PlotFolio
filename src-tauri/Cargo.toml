@@ -1,6 +1,6 @@
 [package]
 name = "plotfolio"
-version = "0.5.0"
+version = "0.5.1"
 license = "MIT"
 description = "Origin-style plotting and data analysis"
 authors = ["Nir Livne"]

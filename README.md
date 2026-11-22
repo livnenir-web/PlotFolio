@@ -1,4 +1,4 @@
-<p align="center"><img src="docs/readme/icon.png" width="128" alt="The PlotFolio icon: two volcanoes drawn as a 3D surface"></p>
+<p align="center"><img src="docs/icon/plotfolio-icon-animated.svg" width="128" alt="The PlotFolio icon: two volcanoes drawn as a 3D surface, with fumes rising from their craters"></p>
 
 <h1 align="center">PlotFolio</h1>
 
@@ -11,7 +11,7 @@
 <p align="center">
   <a href="https://github.com/livnenir-web/PlotFolio/releases/latest/download/PlotFolio.dmg"><img src="docs/readme/button-mac.svg" height="46" alt="Download for Mac"></a>
   <a href="https://github.com/livnenir-web/PlotFolio/releases/latest/download/PlotFolio-Setup.exe"><img src="docs/readme/button-windows.svg" height="46" alt="Download for Windows"></a>
-  <a href="https://livnenir-web.github.io/PlotFolio/"><img src="docs/readme/button-browser.svg" height="46" alt="Try it in your browser"></a>
+  <a href="https://nirlivne.com/plotfolio/app/?sample=ecg"><img src="docs/readme/button-browser.svg" height="46" alt="Try it in your browser"></a>
 </p>
 
 <p align="center">
@@ -72,7 +72,7 @@ An assistant's reading is a second opinion, not a guarantee. If the checksum doe
 
 </details>
 
-**Without installing:** [open PlotFolio in the browser](https://livnenir-web.github.io/PlotFolio/). It works on any system, Linux and older Windows included, and your data never leaves your computer: nothing is uploaded.
+**Without installing:** [open PlotFolio in the browser](https://nirlivne.com/plotfolio/app/?sample=ecg) on [its page at nirlivne.com](https://nirlivne.com/plotfolio/). It works on any system, Linux and older Windows included, and your data never leaves your computer: nothing is uploaded.
 
 <details>
 <summary>What is different in the browser</summary>
@@ -165,7 +165,7 @@ npm run dev
 
 ### Releases
 
-`.github/workflows/release.yml` builds `PlotFolio.dmg` and `PlotFolio-Setup.exe` and publishes them as a GitHub release when a `v*` tag is pushed (or from "Run workflow" on GitHub); `.github/workflows/pages.yml` publishes the browser version to GitHub Pages on every push to `main`.
+`.github/workflows/release.yml` builds `PlotFolio.dmg` and `PlotFolio-Setup.exe` and publishes them as a GitHub release when a `v*` tag is pushed (or from "Run workflow" on GitHub); `.github/workflows/pages.yml` publishes the browser version to GitHub Pages on every push to `main`. The copy on [nirlivne.com/plotfolio](https://nirlivne.com/plotfolio/) is `dist/` placed there by hand.
 
 ### Host it on a website
 
